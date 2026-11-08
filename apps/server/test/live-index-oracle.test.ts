@@ -1,42 +1,13 @@
-import { invertHunks, type Hunk, type HeartbeatInput } from "@highground/core";
+import type { HeartbeatInput } from "@highground/core";
 import { describe, expect, it } from "vitest";
-import { LiveIndex, type Oracle } from "../src/live-index.ts";
+import { LiveIndex } from "../src/live-index.ts";
+import { FakeOracle, hunk, OTHER_TO_SHA } from "./fake-oracle.ts";
 import { ALICE, BOB, CAROL, file, heartbeat, OTHER_SHA, REPO, SHA } from "./fixtures.ts";
 
 const T0 = Date.parse("2026-11-08T12:00:00Z");
 const DAY = 86_400_000;
 const H1 = "1".repeat(40);
 const H2 = "2".repeat(40);
-
-const hunk = (oldStart: number, oldCount: number, newStart: number, newCount: number): Hunk => ({
-  oldStart,
-  oldCount,
-  newStart,
-  newCount,
-  added: [],
-});
-
-/** Five lines were added at the top of a.ts between OTHER_SHA and SHA. */
-const OTHER_TO_SHA = [hunk(0, 0, 1, 5)];
-
-class FakeOracle implements Oracle {
-  readonly asked: string[] = [];
-  hunksBetween = new Map<string, Hunk[]>();
-  merged = new Map<string, string[]>();
-
-  hunks(repo: string, from: string, to: string, path: string): Hunk[] | undefined {
-    this.asked.push(`hunks ${from.slice(0, 1)}→${to.slice(0, 1)} ${path}`);
-    return this.hunksBetween.get(`${from}${to}${path}`);
-  }
-  conflicts(repo: string, a: string, b: string, path: string): string[] | undefined {
-    this.asked.push(`merge ${path}`);
-    return this.merged.get([a, b].sort().join(""));
-  }
-  knowsTranslation(from: string, to: string, path: string, hunks: Hunk[]) {
-    this.hunksBetween.set(`${from}${to}${path}`, hunks);
-    this.hunksBetween.set(`${to}${from}${path}`, invertHunks(hunks));
-  }
-}
 
 const ask = (workingCopyId: string, start: number, end: number, extra: object = {}) => ({
   repo: REPO,

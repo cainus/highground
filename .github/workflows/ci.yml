@@ -25,6 +25,26 @@ jobs:
         env:
           ORACLE_RUNS: "1000"
 
+  e2e:
+    name: Dashboard end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      # Builds the dashboard, then runs it on the real server against the fake GitHub.
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/
+
   bench:
     name: Latency (p99 < 10 ms)
     runs-on: ubuntu-latest

@@ -1,5 +1,11 @@
-import { generateKeyPairSync, verify, type KeyObject } from "node:crypto";
+import { createHash, generateKeyPairSync, verify, type KeyObject } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+
+export interface FakeProfile {
+  id: number;
+  login: string;
+  emails: { email: string; verified: boolean }[];
+}
 
 export interface FakePull {
   head: string;
@@ -10,8 +16,8 @@ export interface FakePull {
 
 /**
  * Just enough of GitHub for Highground: App installation tokens (checking the App's
- * RS256 JWT), open pull requests, repository read access for user tokens, and the
- * device flow. Every request is recorded.
+ * RS256 JWT), open pull requests, repository read access for user tokens, the device
+ * flow, and the web flow with PKCE. Every request is recorded.
  */
 export class FakeGitHub {
   readonly appId = "4242";
@@ -25,18 +31,26 @@ export class FakeGitHub {
   readonly users = new Map<string, Set<string>>();
   /** Device codes the "user" has approved, → the token they get. */
   readonly approved = new Map<string, string>();
+  /** `owner/name`s the App is not installed on. */
+  readonly uninstalled = new Set<string>();
   /** User tokens whose rate limit is spent. */
   readonly rateLimited = new Set<string>();
   /** When set, every device-flow poll answers with this error (`access_denied`, `expired_token`). */
   deviceError: string | undefined;
   /** When set, every device code is approved with this token after one pending poll. */
   autoApprove: string | undefined;
+  /** User token → who it belongs to, for `/user` and `/user/emails`. */
+  readonly profiles = new Map<string, FakeProfile>();
+  /** The token the web flow's "user" signs in with; unset, authorize answers 403. */
+  webUser: string | undefined;
   /** Refresh token → the token a refresh issues. */
   readonly refreshes = new Map<string, string>();
   url = "";
 
   readonly #publicKey: KeyObject;
   readonly #installationTokens = new Set<string>();
+  /** Web-flow codes → what they were issued for. */
+  readonly #codes = new Map<string, { challenge: string; redirectUri: string; token: string }>();
   #issued = 0;
   #server = createServer((req, res) => void this.#handle(req, res));
 
@@ -93,7 +107,10 @@ export class FakeGitHub {
     let match: RegExpExecArray | null;
 
     if ((match = /^\/repos\/([^/]+\/[^/]+)\/installation$/.exec(url.pathname))) {
-      return this.#jwtValid(auth) ? send(200, { id: 7 }) : send(401);
+      if (!this.#jwtValid(auth)) return send(401);
+      return this.uninstalled.has(match[1]!)
+        ? send(404, { message: "Not Found" })
+        : send(200, { id: 7 });
     }
     if (url.pathname === "/app/installations/7/access_tokens" && req.method === "POST") {
       if (!this.#jwtValid(auth)) return send(401);
@@ -123,6 +140,37 @@ export class FakeGitHub {
       if (!readable) return send(401, { message: "Bad credentials" });
       return readable.has(match[1]!) ? send(200, { full_name: match[1] }) : send(404);
     }
+    if (url.pathname === "/login/oauth/authorize" && req.method === "GET") {
+      const q = url.searchParams;
+      if (!this.webUser || q.get("client_id") !== this.clientId) return send(403);
+      if (q.get("code_challenge_method") !== "S256" || !q.get("code_challenge")) return send(400);
+      const code = `code-${++this.#issued}`;
+      const redirectUri = q.get("redirect_uri") ?? "";
+      this.#codes.set(code, {
+        challenge: q.get("code_challenge")!,
+        redirectUri,
+        token: this.webUser,
+      });
+      const back = new URL(redirectUri);
+      back.searchParams.set("code", code);
+      back.searchParams.set("state", q.get("state") ?? "");
+      res.writeHead(302, { location: back.toString() });
+      return void res.end();
+    }
+    if (url.pathname === "/user" && req.method === "GET") {
+      const profile = this.profiles.get(auth?.replace(/^Bearer /, "") ?? "");
+      return profile
+        ? send(200, {
+            id: profile.id,
+            login: profile.login,
+            avatar_url: `${this.url}/a/${profile.id}`,
+          })
+        : send(401);
+    }
+    if (url.pathname === "/user/emails" && req.method === "GET") {
+      const profile = this.profiles.get(auth?.replace(/^Bearer /, "") ?? "");
+      return profile ? send(200, profile.emails) : send(401);
+    }
     if (url.pathname === "/login/device/code" && req.method === "POST") {
       if (form.client_id !== this.clientId) return send(401);
       return send(200, {
@@ -143,6 +191,27 @@ export class FakeGitHub {
         return token
           ? send(200, { access_token: token, refresh_token: `r-${token}`, expires_in: 28_800 })
           : send(200, { error: "bad_refresh_token" });
+      }
+      if (form.code) {
+        const issued = this.#codes.get(form.code);
+        this.#codes.delete(form.code);
+        const challenge = createHash("sha256")
+          .update(form.code_verifier ?? "")
+          .digest("base64url");
+        if (
+          !issued ||
+          form.client_secret !== this.clientSecret ||
+          issued.redirectUri !== form.redirect_uri ||
+          issued.challenge !== challenge
+        ) {
+          return send(200, { error: "bad_verification_code" });
+        }
+        return send(200, {
+          access_token: issued.token,
+          refresh_token: `r-${issued.token}`,
+          expires_in: 28_800,
+          refresh_token_expires_in: 15_897_600,
+        });
       }
       const code = form.device_code ?? "";
       if (this.deviceError) return send(200, { error: this.deviceError });

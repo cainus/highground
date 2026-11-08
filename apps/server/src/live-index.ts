@@ -9,6 +9,9 @@ import {
   type Kind,
   type MergeResult,
   type Pair,
+  type RadarCollision,
+  type RadarFile,
+  type RadarWork,
   type Warning,
 } from "@highground/core";
 
@@ -21,6 +24,8 @@ export interface Oracle {
   hunks(repo: string, from: string, to: string, path: string): Hunk[] | undefined;
   /** The paths a speculative merge of two heads conflicts on; `path` is the one asking. */
   conflicts(repo: string, headA: string, headB: string, path: string): string[] | undefined;
+  /** The default branch's head as of the last fetch: the radar's display base. */
+  defaultHead?(repo: string): string | undefined;
 }
 
 /** One side of a comparison: a stored entry, or the changes someone is asking about. */
@@ -91,6 +96,7 @@ const SEVERITY: Record<CollisionType, Warning["severity"]> = {
   DUPLICATE_CHANGE: "MEDIUM",
   PROXIMITY_ALERT: "MEDIUM",
 };
+const SEVERITY_RANK: Record<Warning["severity"], number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
 const RANK: Record<CollisionType, number> = {
   DIRECT_OVERLAP: 3,
   DUPLICATE_CHANGE: 2,
@@ -106,6 +112,51 @@ const DORMANT_MS = 7 * 86_400_000;
 
 const isDormant = (side: Side, now: number) =>
   side.kind !== "live" && side.lastCommitAt !== null && now - side.lastCommitAt > DORMANT_MS;
+
+/** A colliding pair of entries, and how bad it is. */
+/** Two entries on one path that collide, with how each sees the other. */
+export interface JudgedPair {
+  a: Entry;
+  b: Entry;
+  ab: Verdict | null;
+  ba: Verdict | null;
+}
+
+/** A changed path with its pairs judged once. */
+export interface JudgedPath extends PathRef {
+  pairs: JudgedPair[];
+}
+
+export interface CollidingPair {
+  a: Entry;
+  b: Entry;
+  collision: Omit<RadarCollision, "a" | "b">;
+}
+
+const radarIds = new WeakMap<Entry, string>();
+/** Names one actor's work on a file in the radar; computed once per entry. */
+export function radarId(entry: Entry): string {
+  let id = radarIds.get(entry);
+  if (id === undefined) {
+    id = `${entry.workingCopyId}:${entry.actor.type}:${entry.actor.id}`;
+    radarIds.set(entry, id);
+  }
+  return id;
+}
+
+function mostCommonBase(entries: Entry[]): string {
+  const counts = new Map<string, number>();
+  for (const entry of entries) counts.set(entry.baseSha, (counts.get(entry.baseSha) ?? 0) + 1);
+  return [...counts].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0]![0];
+}
+
+/** The verdict that is worse: by severity, then by type. */
+function stronger(x: Verdict | null, y: Verdict | null): Verdict | null {
+  if (!x || !y) return x ?? y;
+  const bySeverity = SEVERITY_RANK[y.severity] - SEVERITY_RANK[x.severity];
+  if (bySeverity !== 0) return bySeverity > 0 ? y : x;
+  return RANK[y.pair.type] > RANK[x.pair.type] ? y : x;
+}
 
 const pathKey = (repo: string, path: string) => `${repo}\0${path}`;
 /** Identifies a peer actor across working copies. */
@@ -218,11 +269,14 @@ export class LiveIndex {
 
   /**
    * Every working copy's collisions on one path: working copy → peer actor → its most
-   * severe warning. Each pair of entries is judged once per side — once in all when the
-   * two share a base, since the verdict is then symmetric.
+   * severe warning.
    */
-  collisionsAt(repo: string, path: string, now: number): Map<string, Map<string, Warning>> {
-    const entries = this.entriesAt(repo, path, now);
+  collisionsAt(
+    repo: string,
+    path: string,
+    now: number,
+    pairs: JudgedPair[] = this.#pairsAt(repo, path, now),
+  ): Map<string, Map<string, Warning>> {
     const result = new Map<string, Map<string, Warning>>();
     const keep = (workingCopyId: string, peer: Entry, warning: Warning) => {
       let byPeer = result.get(workingCopyId);
@@ -231,6 +285,124 @@ export class LiveIndex {
       const held = byPeer.get(key);
       if (!held || RANK[warning.type] > RANK[held.type]) byPeer.set(key, warning);
     };
+    for (const { a, b, ab, ba } of pairs) {
+      if (ab) keep(a.workingCopyId, b, warningOf(ab, path, b, now));
+      if (ba) keep(b.workingCopyId, a, warningOf(ba, path, a, now));
+    }
+    return result;
+  }
+
+  /**
+   * Every file in a repository with live entries (PRD §10): each actor's work, its lines
+   * in the file's display base — the default branch's head when the mirror knows it, else
+   * the base most of the file's work shares — and each colliding pair once, judged from
+   * the side that sees it worse. Files with the worst collisions come first.
+   */
+  radar(repo: string, now: number): RadarFile[] {
+    const files: { file: RadarFile; worst: number }[] = [];
+    const prefix = `${repo}\0`;
+    for (const pKey of this.#byPath.keys()) {
+      if (!pKey.startsWith(prefix)) continue;
+      const path = pKey.slice(prefix.length);
+      const entries = this.entriesAt(repo, path, now);
+      if (entries.length === 0) continue;
+      const base = this.#oracle?.defaultHead?.(repo) ?? mostCommonBase(entries);
+      const work = entries.map((entry) => this.#radarWork(entry, path, base, now));
+      const collisions: RadarCollision[] = [];
+      let worst = 0;
+      for (const { a, b, collision } of this.collidingPairs(repo, path, now)) {
+        worst = Math.max(worst, SEVERITY_RANK[collision.severity]);
+        collisions.push({ a: radarId(a), b: radarId(b), ...collision });
+      }
+      files.push({ file: { path, base_sha: base, work, collisions }, worst });
+    }
+    return files
+      .sort((x, y) => y.worst - x.worst || x.file.path.localeCompare(y.file.path))
+      .map(({ file }) => file);
+  }
+
+  /** Each colliding pair of entries on a path once, with the worse of its two verdicts. */
+  collidingPairs(
+    repo: string,
+    path: string,
+    now: number,
+    pairs: JudgedPair[] = this.#pairsAt(repo, path, now),
+  ): CollidingPair[] {
+    const result: CollidingPair[] = [];
+    for (const { a, b, ab, ba } of pairs) {
+      const verdict = stronger(ab, ba);
+      if (!verdict) continue;
+      result.push({
+        a,
+        b,
+        collision: {
+          type: verdict.pair.type,
+          severity: verdict.severity,
+          confirmed: verdict.confirmed,
+          approximate: verdict.approximate,
+        },
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Judges every pair on each path once, so everything that follows one change (warning
+   * streams, history) shares the work instead of repeating it.
+   */
+  judge(paths: PathRef[], now: number): JudgedPath[] {
+    return paths.map(({ repo, path }) => ({ repo, path, pairs: this.#pairsAt(repo, path, now) }));
+  }
+
+  /** Every path with entries, expired or not. */
+  paths(): PathRef[] {
+    return [...this.#byPath.values()].flatMap((entries) => {
+      const [first] = entries.values();
+      return first ? [{ repo: first.repo, path: first.path }] : [];
+    });
+  }
+
+  #radarWork(entry: Entry, path: string, base: string, now: number): RadarWork {
+    let lines = entry.changes.map((c) => c.range);
+    let approximate = false;
+    if (entry.baseSha !== base && !entry.wholeFile) {
+      const hunks = this.#oracle?.hunks(entry.repo, entry.baseSha, base, path);
+      if (!hunks) {
+        approximate = true;
+      } else {
+        lines = lines.map((range) => {
+          const translated = translate(range, hunks);
+          if (!translated.exact) approximate = true;
+          return translated.range;
+        });
+      }
+    }
+    return {
+      id: radarId(entry),
+      working_copy_id: entry.workingCopyId,
+      actor: entry.actor,
+      author: entry.author,
+      kind: entry.kind,
+      branch: entry.branch,
+      head_sha: entry.headSha,
+      pr_url: entry.prUrl,
+      base_sha: entry.baseSha,
+      whole_file: entry.wholeFile,
+      lines,
+      approximate,
+      intent: entry.intent,
+      last_heartbeat_seconds_ago: Math.max(0, Math.floor((now - entry.receivedAt) / 1000)),
+    };
+  }
+
+  /**
+   * Every pair of entries on one path, with how each side sees the other. Each pair is
+   * judged once per side — once in all when the two share a base, since the verdict is
+   * then symmetric.
+   */
+  #pairsAt(repo: string, path: string, now: number): JudgedPair[] {
+    const entries = this.entriesAt(repo, path, now);
+    const pairs: JudgedPair[] = [];
     for (let i = 0; i < entries.length; i++) {
       const a = entries[i] as Entry;
       for (let j = i + 1; j < entries.length; j++) {
@@ -240,11 +412,10 @@ export class LiveIndex {
           a.baseSha === b.baseSha
             ? ab && { ...ab, pair: { ...ab.pair, ours: ab.pair.theirs, theirs: ab.pair.ours } }
             : this.#judge(repo, path, b, a, now);
-        if (ab) keep(a.workingCopyId, b, warningOf(ab, path, b, now));
-        if (ba) keep(b.workingCopyId, a, warningOf(ba, path, a, now));
+        if (ab || ba) pairs.push({ a, b, ab, ba });
       }
     }
-    return result;
+    return pairs;
   }
 
   /**

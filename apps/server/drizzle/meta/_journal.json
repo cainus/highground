@@ -15,6 +15,34 @@
       "when": 1794155542850,
       "tag": "0001_repos",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794158042814,
+      "tag": "0002_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794158593486,
+      "tag": "0003_collision_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794158954062,
+      "tag": "0004_push_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794159178337,
+      "tag": "0005_client_status",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import type { CollisionEvent, Warning } from "@highground/core";
-import type { LiveIndex, PathRef } from "./live-index.ts";
+import type { JudgedPair, LiveIndex, PathRef } from "./live-index.ts";
 
 /** What about a collision is worth announcing again when it changes. */
 const verdictOf = (w: Warning) => `${w.type}/${w.severity}/${w.confirmed}/${w.approximate}`;
@@ -25,14 +25,15 @@ export class CollisionTracker {
     this.#emit = emit;
   }
 
-  refresh(paths: PathRef[], now: number): void {
-    for (const { repo, path } of paths) this.#refreshPath(repo, path, now);
+  /** Paths that changed, with their pairs when the caller has judged them already. */
+  refresh(paths: (PathRef & { pairs?: JudgedPair[] })[], now: number): void {
+    for (const { repo, path, pairs } of paths) this.#refreshPath(repo, path, now, pairs);
   }
 
-  #refreshPath(repo: string, path: string, now: number): void {
+  #refreshPath(repo: string, path: string, now: number, pairs?: JudgedPair[]): void {
     const key = `${repo}\0${path}`;
     const previous = this.#state.get(key) ?? new Map<string, Map<string, Warning>>();
-    const next = this.#index.collisionsAt(repo, path, now);
+    const next = this.#index.collisionsAt(repo, path, now, pairs);
     for (const workingCopyId of new Set([...next.keys(), ...previous.keys()])) {
       const current = next.get(workingCopyId) ?? new Map<string, Warning>();
       const before = previous.get(workingCopyId) ?? new Map<string, Warning>();

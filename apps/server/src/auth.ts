@@ -5,10 +5,10 @@ import type { Access, GitHubApp } from "./github.ts";
 /** Decides whether a request may read or report on a repository (ADR 0004). */
 export interface Authorizer {
   /**
-   * Resolves when the request's credentials may act on `repo`; otherwise throws an
-   * `UNAUTHORIZED` (no or unknown credentials) or `FORBIDDEN` (no access) error.
+   * Resolves when the caller's GitHub token may act on `repo`; otherwise throws an
+   * `UNAUTHORIZED` (no or unknown token) or `FORBIDDEN` (no access) error.
    */
-  authorize(authorization: string | undefined, repo: string): Promise<void>;
+  authorize(token: string | undefined, repo: string): Promise<void>;
 }
 
 /** For tests and single-user installs that accept every request. */
@@ -35,8 +35,7 @@ export class GitHubAuthorizer implements Authorizer {
     this.#now = now;
   }
 
-  async authorize(authorization: string | undefined, repo: string): Promise<void> {
-    const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
+  async authorize(token: string | undefined, repo: string): Promise<void> {
     if (!token) throw new ORPCError("UNAUTHORIZED", { message: "sign in with `highground login`" });
     const access = await this.#access(token, repo);
     if (access === "invalid") {

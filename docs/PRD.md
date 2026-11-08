@@ -165,7 +165,7 @@ Query: `repo`, `path`, `start`, `end`, `working_copy_id`, `base_sha`, optional `
 ### 5.4 `GET /api/v1/subscribe` (SSE)
 
 - Per working copy: `collision_started` / `collision_ended` events carrying the warning payload, emitted whenever a heartbeat, a fetch or a confirmation changes the collisions with that working copy's current ranges. A pushed peer's `head_sha` tells the daemon which commit to fetch for a speculative merge.
-- Per repo (dashboard): every change to the live index.
+- Per repo (dashboard, `watchRadar`): a radar snapshot at once, then a fresh one, at most every 250 ms, whenever a path in the repo changes. A snapshot replaces the last, so a dropped event loses nothing.
 - Resumes with `Last-Event-ID`.
 - **Presence:** if a working copy's stream closes and does not reconnect within 10 s, its live ranges are cleared immediately. TTL remains the backstop for clients without a stream.
 
@@ -176,6 +176,10 @@ The instance's GitHub App client id and GitHub URL, for the device flow; and a r
 ### 5.6 `POST /api/v1/logs`
 
 Frontend log batches (§9).
+
+### 5.7 Dashboard
+
+`me`, `repos` (tracked repositories the caller can read), `radar`, `history` (up to 365 days), `admin`, `pushKey`, `subscribePush` / `unsubscribePush`. Clients report degraded states through `POST /api/v1/client-status`. The dashboard calls them through the RPC endpoint at `/rpc`.
 
 ## 6. Clients
 
@@ -197,14 +201,19 @@ Human IDE extensions (VS Code first) are v2.
 
 GitHub is the identity provider and the source of repository access (ADR 0004). Device flow for the CLI, OAuth for the dashboard, both through the instance's one GitHub App. Every heartbeat, query and subscription checks the user's GitHub read access to the repo: 401 for a missing or rejected token, 403 for no access. Answers are cached for 5 minutes, refusals for 30 seconds. The same App, installed per organization with read-only contents permission, serves the mirror and PR lookups. A server without a GitHub App must be started with an explicit authorizer. The daemon's local endpoint requires the per-daemon secret from `daemon.json`.
 
+The dashboard signs in with the OAuth web flow and PKCE. Its session is the `hg_session` cookie (`HttpOnly`, `SameSite=Lax`, `Secure` on https, 30 days idle). The server stores only the cookie's SHA-256, and GitHub's tokens encrypted with AES-256-GCM under the instance's session key. A session is checked against GitHub exactly as a bearer token is, and its token is refreshed an hour before it expires, by one request at a time.
+
 ## 8. Storage
 
 Postgres via Drizzle (ADR 0002).
 
 - **`heartbeats`** — append-only, `PARTITION BY RANGE (received_at)`, daily partitions, hand-written migration. The server creates the next 3 days of partitions and drops partitions older than 3 days, on startup and hourly.
 - **Live index** — in memory, rebuilt from the last 300 s of `heartbeats` on startup; expiry checked on read and swept every 5 s; instances sync via `LISTEN/NOTIFY`.
-- **`collision_events`** — one row per collision start/end: the pair, ranges, severity, approximate/confirmed, and whether the actor changed course afterwards. Kept 1 year.
-- **`push_subscriptions`** — Web Push endpoints per user.
+- **`collision_events`** — one row per collision episode: the pair, path, strongest type and severity, approximate/confirmed, start and end, which side ended it, whether an agent changed course, and when its HIGH warning was pushed. Written by one instance holding an advisory lock, in batches. Kept 1 year.
+- **`sessions`** — dashboard sessions (§7).
+- **`push_subscriptions`** — Web Push endpoints per GitHub user.
+- **`client_status`** — the last degraded or recovered report per working copy and client.
+- **`repos`** — every repository a client has reported in, with the mirror's last fetch and error when it mirrors.
 
 ## 9. Logging
 
@@ -220,9 +229,11 @@ React + Vite + Tailwind + shadcn/ui, TanStack Query over the oRPC client, live o
 
 - **Radar** — per repo, files with active work; ranges by working copy and actor (human, agent, pushed branch); collisions highlighted with confirmed/approximate, intent, and PR links.
 - **My work** — the radar filtered to the signed-in author's working copies.
-- **Web Push** — opt-in; notifies on HIGH collisions newly started against the user's working copies, once per collision; clicking opens the radar at the file. Works with no tab open.
+- **Web Push** — opt-in; notifies on HIGH collisions newly started against the user's working copies, once per collision; clicking opens the radar at the file. Works with no tab open. The user's working copies are those whose author is one of the user's verified GitHub emails, and a user who can no longer read the repository is not told.
 - **History** — collision events over time, hottest files, most-colliding actor pairs, and how often agents changed course after a warning.
-- **Admin** — repos, GitHub App status, mirror fetch health, degraded MCP clients.
+- **Admin** — repos, GitHub App status, mirror fetch health, and daemons and MCP servers that reported a degraded state in the last hour.
+
+The server serves the built dashboard beside the API, with a content security policy that allows only its own origin and GitHub's avatars. Any page path falls back to the app; fingerprinted assets are cached for good.
 
 ## 11. Repository layout
 

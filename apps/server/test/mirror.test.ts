@@ -252,6 +252,25 @@ describe("translation between bases", () => {
     );
   });
 
+  it("shows the radar in the default branch's head, translating older work into it", async () => {
+    const o = origin();
+    const old = o.main;
+    write(o.dir, { "a.txt": `top1\ntop2\ntop3\ntop4\ntop5\n${lines(30)}` });
+    const moved = commitAll(o.dir, "main grows at the top");
+    const s = await server(o.dir);
+    s.mirror!.track(REPO);
+    await s.mirror!.round();
+
+    await heartbeat(s, BOB, old, [20, 22]);
+    await eventually(async () => {
+      const [file] = s.hub.radar(REPO).files;
+      expect(file).toMatchObject({
+        base_sha: moved,
+        work: [{ base_sha: old, lines: [[25, 27]], approximate: false }],
+      });
+    });
+  });
+
   it("fetches when a heartbeat names a base the mirror has not seen yet", async () => {
     const o = origin();
     const s = await server(o.dir);

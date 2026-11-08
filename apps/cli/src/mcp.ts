@@ -14,7 +14,8 @@ import type { daemonContract } from "./local-contract.ts";
 import { broadcastIntent, checkRadar } from "./radar.ts";
 import { configDir } from "./config.ts";
 import { Credentials } from "./credentials.ts";
-import { describeError, serverClient } from "./server-client.ts";
+import { describeError, serverClient, type ServerClient } from "./server-client.ts";
+import { VERSION } from "./version.ts";
 
 export interface McpOptions {
   /** The agent's working directory, inside the working copy it works in. */
@@ -81,7 +82,7 @@ type Call =
  * answers, else runs git itself against the server, else fails open with the reason.
  */
 export function createMcpServer({ cwd, env, log, daemonTimeoutMs = 1_500 }: McpOptions): McpServer {
-  const server = new McpServer({ name: "highground", version: "0.1.0" });
+  const server = new McpServer({ name: "highground", version: VERSION });
   let actorId: string | undefined;
   const actor = () => {
     const client = server.server.getClientVersion()?.name ?? "agent";
@@ -140,13 +141,38 @@ export function createMcpServer({ cwd, env, log, daemonTimeoutMs = 1_500 }: McpO
         workingCopyId: id,
         server: serverClient(url, new Credentials({ dir: configDir(env), server: url, env })),
       };
-      return call.kind === "intent"
-        ? await broadcastIntent(context, { actor: actor(), ...call })
-        : await checkRadar(context, call);
+      const warnings =
+        call.kind === "intent"
+          ? await broadcastIntent(context, { actor: actor(), ...call })
+          : await checkRadar(context, call);
+      reportGitRoute(context.server, context.state.repo, id, reasons.join("; "));
+      return warnings;
     } catch (error) {
       reasons.push(`git route: ${describeError(error)}`);
       return null;
     }
+  }
+
+  /**
+   * Tells the server this agent is being answered without its daemon, so the admin page
+   * shows it: at most once a minute, and never in the way of the answer.
+   */
+  let reportedAt = 0;
+  function reportGitRoute(client: ServerClient, repo: string, id: string, reason: string): void {
+    if (Date.now() - reportedAt < 60_000) return;
+    reportedAt = Date.now();
+    client
+      .clientStatus({
+        repo,
+        working_copy_id: id,
+        client: "mcp",
+        version: VERSION,
+        route: "git",
+        degraded: reason.slice(0, 500) || "daemon unreachable",
+      })
+      .catch((error: unknown) =>
+        log.warn({ reason: describeError(error) }, "status report failed"),
+      );
   }
 
   async function answer(call: Call): Promise<RadarAnswer> {

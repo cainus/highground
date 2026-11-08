@@ -17,9 +17,24 @@ export interface UserTokens {
   refresh_token?: string;
   /** Seconds until the access token expires. */
   expires_in?: number;
+  /** Seconds until the refresh token expires. */
+  refresh_token_expires_in?: number;
+}
+
+export interface GitHubUser {
+  id: number;
+  login: string;
+  avatar_url: string;
 }
 
 export type Access = "read" | "denied" | "invalid";
+
+/** The App is not installed on the repository's owner, or not given that repository. */
+export class NotInstalledError extends Error {
+  constructor(repo: string) {
+    super(`the GitHub App is not installed for ${repo}`);
+  }
+}
 
 /** `github.com/acme/api` → `acme/api`. */
 const fullName = (repo: string) => repo.split("/").slice(1).join("/");
@@ -72,6 +87,10 @@ export class GitHubApp {
     let installation = this.#installations.get(repo);
     if (installation === undefined) {
       const res = await this.#api(`/repos/${fullName(repo)}/installation`, { token: this.#jwt() });
+      if (res.status === 404) {
+        await res.body?.cancel();
+        throw new NotInstalledError(repo);
+      }
       installation = (await this.#json<{ id: number }>(res, `installation for ${repo}`)).id;
       this.#installations.set(repo, installation);
     }
@@ -135,20 +154,58 @@ export class GitHubApp {
     throw new Error(`GitHub repository lookup: ${res.status}`);
   }
 
-  /** Exchanges a user's refresh token for new tokens; the client secret never leaves the server. */
-  async refresh(refreshToken: string): Promise<UserTokens> {
+  /** Where to send a browser to sign in: GitHub's authorize page, with PKCE. */
+  authorizeUrl(options: { state: string; challenge: string; redirectUri: string }): string {
+    const url = new URL("/login/oauth/authorize", this.config.webUrl);
+    url.searchParams.set("client_id", this.config.clientId);
+    url.searchParams.set("redirect_uri", options.redirectUri);
+    url.searchParams.set("state", options.state);
+    url.searchParams.set("code_challenge", options.challenge);
+    url.searchParams.set("code_challenge_method", "S256");
+    return url.toString();
+  }
+
+  /** Exchanges a web-flow code, with the PKCE verifier and the App's client secret. */
+  async exchangeCode(code: string, verifier: string, redirectUri: string): Promise<UserTokens> {
+    return this.#tokenRequest(
+      { code, code_verifier: verifier, redirect_uri: redirectUri },
+      "code exchange",
+    );
+  }
+
+  async user(userToken: string): Promise<GitHubUser> {
+    return this.#json(await this.#api("/user", { token: userToken }), "user");
+  }
+
+  /** The user's verified emails; needs the App's "Email addresses: read" permission. */
+  async emails(userToken: string): Promise<string[]> {
+    const emails = await this.#json<{ email: string; verified: boolean }[]>(
+      await this.#api("/user/emails", { token: userToken }),
+      "user emails",
+    );
+    return emails.filter((e) => e.verified).map((e) => e.email);
+  }
+
+  async #tokenRequest(form: Record<string, string>, what: string): Promise<UserTokens> {
     const res = await fetch(`${this.config.webUrl}/login/oauth/access_token`, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
+        ...form,
       }),
     });
-    const body = await this.#json<UserTokens & { error?: string }>(res, "token refresh");
-    if (body.error) throw new Error(`GitHub token refresh: ${body.error}`);
+    const body = await this.#json<UserTokens & { error?: string }>(res, what);
+    if (body.error) throw new Error(`GitHub ${what}: ${body.error}`);
     return body;
+  }
+
+  /** Exchanges a user's refresh token for new tokens; the client secret never leaves the server. */
+  async refresh(refreshToken: string): Promise<UserTokens> {
+    return this.#tokenRequest(
+      { grant_type: "refresh_token", refresh_token: refreshToken },
+      "token refresh",
+    );
   }
 }

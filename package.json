@@ -6,13 +6,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "typecheck": "tsc",
+    "typecheck": "tsc && tsc -p apps/web",
     "lint": "oxlint",
     "fmt": "oxfmt",
-    "bench": "pnpm --filter @highground/server bench"
+    "bench": "pnpm --filter @highground/server bench",
+    "build": "pnpm --filter @highground/web build",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@types/node": "^26.6.6",
+    "@vitejs/plugin-react": "^6.2.1",
     "@vitest/coverage-v8": "^5.1.0",
     "fast-check": "^4.10.2",
     "oxfmt": "^0.77.0",

@@ -1,3 +1,4 @@
+import type { Admin } from "@highground/core";
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -126,6 +127,19 @@ describe("highground mcp", () => {
       route: "git",
       degraded: false,
       warnings: [{ your_lines: [9, 9], peer: { lines: [9, 9] } }],
+    });
+  });
+
+  it("tells the server it is answering without the daemon, for the admin page", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(20) });
+    await (await agent(wc.dir, { HIGHGROUND_SERVER_URL: hg.url })).check("a.txt", [[9, 9]]);
+    await eventually(async () => {
+      const { clients } = (await (await fetch(`${hg.url}/api/v1/admin`)).json()) as Admin;
+      expect(clients.find((c) => c.repo === wc.repo)).toMatchObject({
+        client: "mcp",
+        route: "git",
+        degraded: expect.stringMatching(/no daemon announced/),
+      });
     });
   });
 

@@ -1,3 +1,4 @@
+import type { Admin } from "@highground/core";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -182,6 +183,15 @@ describe("Reporter", () => {
         expect((await peerQuery(late.url, wc, "a.txt", 7, 7)).warnings).toHaveLength(1);
       });
       expect(r.degraded).toBeNull();
+      // The admin page hears what the outage was, once the server can be told.
+      await eventually(async () => {
+        const { clients } = (await (await fetch(`${late.url}/api/v1/admin`)).json()) as Admin;
+        expect(clients.find((c) => c.repo === wc.repo)).toMatchObject({
+          client: "daemon",
+          route: null,
+          degraded: expect.stringMatching(/^recovered after: .*(fetch failed|ECONNREFUSED)/),
+        });
+      });
     } finally {
       await r.stop();
       await late.close();

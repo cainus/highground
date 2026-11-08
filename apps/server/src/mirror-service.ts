@@ -2,6 +2,7 @@ import { eq, sql as raw } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type postgres from "postgres";
 import { repos } from "./db/schema.ts";
+import { Lease } from "./lease.ts";
 import type { Mirror } from "./mirror.ts";
 import type { PushedWork } from "./pushed-work.ts";
 
@@ -25,12 +26,13 @@ export class MirrorService {
   readonly #known = new Set<string>();
   #timer: NodeJS.Timeout | undefined;
   #round: Promise<void> | undefined;
-  #leader: postgres.ReservedSql | undefined;
+  readonly #lease: Lease;
   #stopped = false;
 
   constructor(options: MirrorServiceOptions) {
     this.#options = options;
     this.#db = drizzle(options.sql);
+    this.#lease = new Lease(options.sql, "highground.pushed-work");
   }
 
   async start(): Promise<void> {
@@ -45,12 +47,7 @@ export class MirrorService {
     this.#stopped = true;
     clearInterval(this.#timer);
     await this.#round?.catch(() => {});
-    if (this.#leader) {
-      await this.#leader`SELECT pg_advisory_unlock(hashtext('highground.pushed-work'))`.catch(
-        () => {},
-      );
-      this.#leader.release();
-    }
+    await this.#lease.close();
   }
 
   /** Starts mirroring a repository the first time it is named, and fetches it at once. */
@@ -95,18 +92,8 @@ export class MirrorService {
       .catch(() => {});
   }
 
-  /** Whether this instance holds the publisher lock, trying to take it if not. */
-  async #isLeader(): Promise<boolean> {
-    if (this.#leader) return true;
-    if (this.#stopped) return false;
-    const reserved = await this.#options.sql.reserve();
-    const [row] = await reserved<{ locked: boolean }[]>`
-      SELECT pg_try_advisory_lock(hashtext('highground.pushed-work')) AS locked`;
-    if (row?.locked) {
-      this.#leader = reserved;
-      return true;
-    }
-    reserved.release();
-    return false;
+  /** Whether this instance publishes pushed work, taking the lease when it is free. */
+  #isLeader(): Promise<boolean> {
+    return this.#stopped ? Promise.resolve(false) : this.#lease.held();
   }
 }

@@ -1,6 +1,14 @@
 import { join } from "node:path";
 import type { Hunk } from "@highground/core";
-import { diffPaths, fetchMirror, hasCommit, initMirror, mergeTree } from "@highground/git";
+import {
+  branches,
+  defaultBranch,
+  diffPaths,
+  fetchMirror,
+  hasCommit,
+  initMirror,
+  mergeTree,
+} from "@highground/git";
 import type { Oracle, PathRef } from "./live-index.ts";
 
 /** Where a repository is fetched from, and the git config (credentials) to fetch with. */
@@ -40,6 +48,8 @@ class Bounded<K, V> extends Map<K, V> {
  */
 export class Mirror implements Oracle {
   onLearned: (paths: PathRef[]) => void;
+  /** Called when a fetch moves a repository's default branch: the radar's display base. */
+  onHeadChanged: (repo: string) => void = () => {};
   readonly #options: MirrorOptions;
   /** `repo\0from\0to` → path → hunks (null: binary, untranslatable). */
   readonly #hunks = new Bounded<string, Map<string, Hunk[] | null>>();
@@ -51,6 +61,8 @@ export class Mirror implements Oracle {
   readonly #pendingHunks = new Map<string, Set<string>>();
   readonly #pendingMerges = new Map<string, Set<string>>();
   readonly #syncs = new Map<string, Promise<void>>();
+  /** The default branch's head per repository, as of the last fetch. */
+  readonly #heads = new Map<string, string>();
   #flushing = false;
 
   constructor(options: MirrorOptions) {
@@ -70,10 +82,20 @@ export class Mirror implements Oracle {
         const dir = this.dirOf(repo);
         await initMirror(dir, this.#options.remote.url(repo));
         await fetchMirror(dir, await this.#options.remote.config(repo));
+        const main = await defaultBranch(dir);
+        const head = (await branches(dir)).find((b) => b.name === main)?.head;
+        if (head && head !== this.#heads.get(repo)) {
+          this.#heads.set(repo, head);
+          this.onHeadChanged(repo);
+        }
       })().finally(() => this.#syncs.delete(repo));
       this.#syncs.set(repo, running);
     }
     return running;
+  }
+
+  defaultHead(repo: string): string | undefined {
+    return this.#heads.get(repo);
   }
 
   hunks(repo: string, from: string, to: string, path: string): Hunk[] | undefined {

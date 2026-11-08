@@ -25,6 +25,7 @@ import {
   type RepoState,
 } from "@highground/git";
 import type { Log } from "@highground/log";
+import { VERSION } from "./version.ts";
 import { describeError, type ServerClient } from "./server-client.ts";
 
 export interface ReporterOptions {
@@ -225,6 +226,19 @@ export class Reporter {
     }
     if (this.degraded !== null) {
       this.#options.log.info({ root: state.root }, "reporting recovered");
+      // The server could not be told while it was away; it hears now, for the admin page.
+      this.#options.server
+        .clientStatus({
+          repo: state.repo,
+          working_copy_id: this.id,
+          client: "daemon",
+          version: VERSION,
+          route: null,
+          degraded: `recovered after: ${this.degraded}`.slice(0, 500),
+        })
+        .catch((error: unknown) =>
+          this.#options.log.warn({ reason: describeError(error) }, "status report failed"),
+        );
       this.degraded = null;
     }
     this.#subscribe(state.repo, this.id);

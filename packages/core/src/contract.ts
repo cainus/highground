@@ -43,6 +43,12 @@ export const ActorSchema = z.object({
 
 /** Work in a working copy, on a local branch not checked out, or on the shared remote. */
 export const KindSchema = z.enum(["live", "parked", "pushed"]);
+export const SeveritySchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
+export const CollisionTypeSchema = z.enum([
+  "DIRECT_OVERLAP",
+  "DUPLICATE_CHANGE",
+  "PROXIMITY_ALERT",
+]);
 
 /** A daemon's speculative merge of its work with a pushed branch's head (ADR 0003). */
 export const MergeResultSchema = z.object({
@@ -75,8 +81,8 @@ export const HeartbeatSchema = z.object({
 });
 
 export const WarningSchema = z.object({
-  severity: z.enum(["HIGH", "MEDIUM", "LOW"]),
-  type: z.enum(["DIRECT_OVERLAP", "DUPLICATE_CHANGE", "PROXIMITY_ALERT"]),
+  severity: SeveritySchema,
+  type: CollisionTypeSchema,
   path: z.string(),
   /** Null when the change is to the whole file. */
   your_lines: RangeSchema.nullable(),
@@ -143,6 +149,133 @@ export const UserTokensSchema = z.object({
   refresh_token_expires_in: z.number().int().optional(),
 });
 
+/** One actor's work on one file, as the radar shows it. */
+export const RadarWorkSchema = z.object({
+  /** Stable while the actor works on the file: names it in `collisions`. */
+  id: z.string(),
+  working_copy_id: z.uuid(),
+  actor: ActorSchema,
+  author: z.string(),
+  kind: KindSchema,
+  branch: z.string(),
+  head_sha: CommitShaSchema.nullable(),
+  pr_url: z.url().nullable(),
+  /** The base the work was reported against. */
+  base_sha: CommitShaSchema,
+  whole_file: z.boolean(),
+  /** In the file's display base; untranslated, and `approximate`, when that is not yet known. */
+  lines: z.array(RangeSchema),
+  approximate: z.boolean(),
+  intent: z.string().nullable(),
+  last_heartbeat_seconds_ago: z.number().int(),
+});
+
+/** A colliding pair of work on one file, judged from whichever side sees it worse. */
+export const RadarCollisionSchema = z.object({
+  a: z.string(),
+  b: z.string(),
+  type: CollisionTypeSchema,
+  severity: SeveritySchema,
+  confirmed: z.boolean().nullable(),
+  approximate: z.boolean(),
+});
+
+export const RadarFileSchema = z.object({
+  path: RepoPathSchema,
+  /** The commit every `lines` on this file is shown in. */
+  base_sha: CommitShaSchema,
+  work: z.array(RadarWorkSchema),
+  collisions: z.array(RadarCollisionSchema),
+});
+
+export const RadarSchema = z.object({
+  repo: RepoSchema,
+  /** Worst collisions first. */
+  files: z.array(RadarFileSchema),
+});
+
+export const RepoInputSchema = z.object({ repo: RepoSchema });
+
+export const HistoryInputSchema = z.object({
+  repo: RepoSchema,
+  days: z.coerce.number().int().min(1).max(365).default(30),
+});
+
+export const HistorySchema = z.object({
+  /** One row per day in the window, oldest first, by the day episodes started (UTC). */
+  days: z.array(
+    z.object({
+      day: z.iso.date(),
+      HIGH: z.number().int(),
+      MEDIUM: z.number().int(),
+      LOW: z.number().int(),
+    }),
+  ),
+  files: z.array(
+    z.object({ path: RepoPathSchema, collisions: z.number().int(), worst: SeveritySchema }),
+  ),
+  /** Actor pairs by name, each pair once in a fixed order. */
+  pairs: z.array(z.object({ a: z.string(), b: z.string(), collisions: z.number().int() })),
+  /** Episodes at HIGH with an agent on one side, and how many the agent ended itself. */
+  agents: z.object({ warned: z.number().int(), changed_course: z.number().int() }),
+});
+
+export const PushSubscriptionSchema = z.object({
+  endpoint: z.url().max(2048),
+  keys: z.object({ p256dh: z.string().max(256), auth: z.string().max(64) }),
+});
+
+export const ClientStatusSchema = z.object({
+  repo: RepoSchema,
+  working_copy_id: z.uuid(),
+  client: z.enum(["daemon", "mcp"]),
+  version: z.string().max(64),
+  /** How the client reached the server: through the daemon, or running git itself. */
+  route: z.enum(["daemon", "git"]).nullable(),
+  /** Why the client is, or just was, not working as it should; null when it is. */
+  degraded: z.string().max(500).nullable(),
+});
+
+export const AdminSchema = z.object({
+  github: z.object({ configured: z.boolean() }),
+  repos: z.array(
+    z.object({
+      repo: RepoSchema,
+      added_at: z.iso.datetime({ offset: true }),
+      last_fetch_at: z.iso.datetime({ offset: true }).nullable(),
+      last_error: z.string().nullable(),
+      /** Whether the App can mint a token for the mirror; null without an App. */
+      installation: z.enum(["ok", "missing", "error"]).nullable(),
+    }),
+  ),
+  /** Clients that reported trouble in the last hour. */
+  clients: z.array(ClientStatusSchema.extend({ reported_at: z.iso.datetime({ offset: true }) })),
+});
+
+export const LogLinesSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        time: z.iso.datetime({ offset: true }),
+        level: z.enum(["debug", "info", "warn", "error"]),
+        msg: z.string().max(4000),
+        request_id: z.string().max(64).optional(),
+        url: z.string().max(2048).optional(),
+        stack: z.string().max(16_000).optional(),
+      }),
+    )
+    .max(100),
+});
+
+export const MeSchema = z.object({
+  login: z.string(),
+  avatar_url: z.url(),
+  /** Verified emails: work whose author is one of these is the viewer's own. */
+  emails: z.array(z.string()),
+});
+
+export const ReposSchema = z.object({ repos: z.array(RepoSchema) });
+
 export const contract = {
   heartbeat: oc
     .route({ method: "POST", path: "/heartbeat" })
@@ -156,6 +289,47 @@ export const contract = {
     .route({ method: "GET", path: "/subscribe" })
     .input(SubscribeInputSchema)
     .output(eventIterator(CollisionEventSchema)),
+  /** Every file in a repository with active work, and its collisions. */
+  radar: oc.route({ method: "GET", path: "/radar" }).input(RepoInputSchema).output(RadarSchema),
+  /** The radar now, then again whenever it changes, at most four times a second. */
+  watchRadar: oc
+    .route({ method: "GET", path: "/radar/stream" })
+    .input(RepoInputSchema)
+    .output(eventIterator(RadarSchema)),
+  /** Collisions over time in one repository. */
+  history: oc
+    .route({ method: "GET", path: "/history" })
+    .input(HistoryInputSchema)
+    .output(HistorySchema),
+  /** The VAPID public key a browser subscribes to Web Push with; 404 without push. */
+  pushKey: oc
+    .route({ method: "GET", path: "/push/key" })
+    .output(z.object({ public_key: z.string() })),
+  /** Sends the signed-in user's HIGH collisions to this browser. */
+  subscribePush: oc
+    .route({ method: "POST", path: "/push/subscribe" })
+    .input(PushSubscriptionSchema)
+    .output(z.object({})),
+  unsubscribePush: oc
+    .route({ method: "POST", path: "/push/unsubscribe" })
+    .input(PushSubscriptionSchema.pick({ endpoint: true }))
+    .output(z.object({})),
+  /** Mirror, GitHub App and client health for the caller's repositories. */
+  admin: oc.route({ method: "GET", path: "/admin" }).output(AdminSchema),
+  /** A client reporting its own health. */
+  clientStatus: oc
+    .route({ method: "POST", path: "/client-status" })
+    .input(ClientStatusSchema)
+    .output(z.object({})),
+  /** The dashboard's own log lines (PRD §9); at most 64 KB a batch, 100 lines a minute. */
+  logs: oc
+    .route({ method: "POST", path: "/logs" })
+    .input(LogLinesSchema)
+    .output(z.object({ accepted: z.number().int() })),
+  /** The signed-in dashboard user. */
+  me: oc.route({ method: "GET", path: "/me" }).output(MeSchema),
+  /** The tracked repositories the caller can read. */
+  repos: oc.route({ method: "GET", path: "/repos" }).output(ReposSchema),
   /** How a CLI signs in to this instance; 404 when it has no GitHub App. */
   authConfig: oc.route({ method: "GET", path: "/auth/github" }).output(AuthConfigSchema),
   /** Exchanges a refresh token; the App's client secret stays on the server. */
@@ -177,3 +351,13 @@ export type Kind = z.infer<typeof KindSchema>;
 export type MergeResult = z.infer<typeof MergeResultSchema>;
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type UserTokens = z.infer<typeof UserTokensSchema>;
+export type Me = z.infer<typeof MeSchema>;
+export type Radar = z.infer<typeof RadarSchema>;
+export type RadarFile = z.infer<typeof RadarFileSchema>;
+export type RadarWork = z.infer<typeof RadarWorkSchema>;
+export type RadarCollision = z.infer<typeof RadarCollisionSchema>;
+export type History = z.infer<typeof HistorySchema>;
+export type PushSubscription = z.infer<typeof PushSubscriptionSchema>;
+export type Admin = z.infer<typeof AdminSchema>;
+export type ClientStatus = z.infer<typeof ClientStatusSchema>;
+export type LogLines = z.infer<typeof LogLinesSchema>;

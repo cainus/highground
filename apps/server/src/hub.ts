@@ -1,6 +1,7 @@
 import {
   HeartbeatSchema,
   type CollisionEvent,
+  type Radar,
   type Heartbeat,
   type Warning,
   type WarningsQuery,
@@ -8,7 +9,7 @@ import {
 } from "@highground/core";
 import { CollisionTracker } from "./collision-tracker.ts";
 import type { HeartbeatLog } from "./db/heartbeat-log.ts";
-import { LiveIndex, type Oracle, type PathRef } from "./live-index.ts";
+import { LiveIndex, type JudgedPath, type Oracle, type PathRef } from "./live-index.ts";
 
 /** The longest TTL a heartbeat may have; rebuilding replays this much of the log. */
 const MAX_TTL_MS = 300_000;
@@ -21,9 +22,36 @@ export interface HubOptions {
   now?: () => number;
   /** The mirror's knowledge, for translation and speculative merges. */
   oracle?: Oracle;
+  /** The least time between two radar updates on one repository's stream. */
+  radarMs?: number;
+}
+
+/** One repository's radar watchers, and the update they are waiting for. */
+interface RadarFeed {
+  watchers: Set<(radar: Radar) => void>;
+  timer: NodeJS.Timeout | undefined;
+  /** When the last update went out. */
+  sentAt: number;
 }
 
 type Listener = (event: CollisionEvent) => void;
+
+/** The heartbeat behind a change; null for expiry and the mirror learning something. */
+export interface ChangeCause {
+  workingCopyId: string;
+  actor: Heartbeat["actor"];
+  scope: Heartbeat["scope"];
+}
+
+/** Told of every change to the index, after collisions have been recomputed. */
+/** Follows index changes; each path comes with its pairs, judged once for everyone. */
+export type ChangeListener = (paths: JudgedPath[], cause: ChangeCause | null, now: number) => void;
+
+const causeOf = (heartbeat: Heartbeat): ChangeCause => ({
+  workingCopyId: heartbeat.working_copy_id,
+  actor: heartbeat.actor,
+  scope: heartbeat.scope,
+});
 
 const respond = (warnings: Warning[]): WarningsResponse => ({
   has_collisions: warnings.length > 0,
@@ -40,6 +68,8 @@ export class Hub {
   readonly #listeners = new Map<string, Set<Listener>>();
   readonly #openStreams = new Map<string, number>();
   readonly #graceTimers = new Map<string, NodeJS.Timeout>();
+  readonly #radarFeeds = new Map<string, RadarFeed>();
+  readonly #changeListeners = new Set<ChangeListener>();
   readonly #now: () => number;
   #sweep: NodeJS.Timeout | undefined;
   #stopped = false;
@@ -63,16 +93,16 @@ export class Hub {
   async start(): Promise<void> {
     const now = this.#now();
     for (const { heartbeat, receivedAt } of await this.#log.since(new Date(now - MAX_TTL_MS))) {
-      this.#tracker.refresh(this.index.apply(heartbeat, receivedAt), now);
+      this.#changed(this.index.apply(heartbeat, receivedAt), now, causeOf(heartbeat));
     }
-    this.#tracker.refresh(this.index.expire(now), now);
+    this.#changed(this.index.expire(now), now);
     this.#unlisten = await this.#log.listen((heartbeat, receivedAt) => {
       if (this.#stopped) return;
-      this.#tracker.refresh(this.index.apply(heartbeat, receivedAt), this.#now());
+      this.#changed(this.index.apply(heartbeat, receivedAt), this.#now(), causeOf(heartbeat));
     });
     this.#sweep = setInterval(() => {
       const at = this.#now();
-      this.#tracker.refresh(this.index.expire(at), at);
+      this.#changed(this.index.expire(at), at);
     }, this.#options.sweepMs);
   }
 
@@ -83,6 +113,7 @@ export class Hub {
   async stop(): Promise<void> {
     this.#stopped = true;
     clearInterval(this.#sweep);
+    for (const feed of this.#radarFeeds.values()) clearTimeout(feed.timer);
     for (const timer of this.#graceTimers.values()) clearTimeout(timer);
     await this.#unlisten?.();
     await this.#log.stop();
@@ -95,7 +126,7 @@ export class Hub {
   heartbeat(heartbeat: Heartbeat): WarningsResponse {
     const now = this.#now();
     this.#log.append(heartbeat, now).catch(() => {});
-    this.#tracker.refresh(this.index.apply(heartbeat, now), now);
+    this.#changed(this.index.apply(heartbeat, now), now, causeOf(heartbeat));
     return respond(
       heartbeat.files.flatMap((file) =>
         this.index.warnings(
@@ -118,9 +149,90 @@ export class Hub {
     );
   }
 
+  /** Every change to the index goes through here: collisions, radar watchers, listeners. */
+  #changed(paths: PathRef[], now: number, cause: ChangeCause | null = null): void {
+    const judged = this.index.judge(paths, now);
+    this.#tracker.refresh(judged, now);
+    for (const repo of new Set(paths.map((p) => p.repo))) this.#radarChanged(repo);
+    for (const listener of this.#changeListeners) listener(judged, cause, now);
+  }
+
+  /** Follows every change to the index; returns the unsubscribe. */
+  onChange(listener: ChangeListener): () => void {
+    this.#changeListeners.add(listener);
+    return () => this.#changeListeners.delete(listener);
+  }
+
+  /** The hub's clock. */
+  now(): number {
+    return this.#now();
+  }
+
+  /** Schedules one radar update for a repository's watchers, at most every `radarMs`. */
+  #radarChanged(repo: string): void {
+    const feed = this.#radarFeeds.get(repo);
+    if (!feed || feed.timer || this.#stopped) return;
+    const wait = Math.max(0, feed.sentAt + (this.#options.radarMs ?? 250) - Date.now());
+    feed.timer = setTimeout(() => {
+      feed.timer = undefined;
+      feed.sentAt = Date.now();
+      const radar = this.radar(repo);
+      for (const watcher of feed.watchers) watcher(radar);
+    }, wait);
+  }
+
+  /** Sends a repository's radar watchers a fresh radar, as when its display base moved. */
+  refreshRepo(repo: string): void {
+    this.#radarChanged(repo);
+  }
+
+  radar(repo: string): Radar {
+    return { repo, files: this.index.radar(repo, this.#now()) };
+  }
+
+  /**
+   * A repository's radar now, then a fresh one after each burst of changes. Every update
+   * is a whole snapshot, so a watcher that misses one loses nothing; one snapshot is
+   * computed per update however many watch.
+   */
+  async *watchRadar(repo: string, signal?: AbortSignal): AsyncGenerator<Radar> {
+    let feed = this.#radarFeeds.get(repo);
+    if (!feed)
+      this.#radarFeeds.set(repo, (feed = { watchers: new Set(), timer: undefined, sentAt: 0 }));
+    let latest: Radar | undefined;
+    let wake: (() => void) | undefined;
+    const watcher = (radar: Radar) => {
+      latest = radar;
+      wake?.();
+    };
+    feed.watchers.add(watcher);
+    try {
+      yield this.radar(repo);
+      while (!signal?.aborted && !this.#stopped) {
+        if (latest) {
+          const next = latest;
+          latest = undefined;
+          yield next;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        wake = undefined;
+      }
+    } finally {
+      feed.watchers.delete(watcher);
+      if (feed.watchers.size === 0) {
+        clearTimeout(feed.timer);
+        this.#radarFeeds.delete(repo);
+      }
+    }
+  }
+
   /** Recomputes collisions on paths whose answers changed, such as when the mirror learns a translation. */
   refresh(paths: PathRef[]): void {
-    if (!this.#stopped) this.#tracker.refresh(paths, this.#now());
+    if (!this.#stopped) this.#changed(paths, this.#now());
   }
 
   query(query: WarningsQuery): WarningsResponse {
