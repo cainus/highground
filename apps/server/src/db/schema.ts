@@ -34,3 +34,11 @@ export const heartbeats = pgTable(
     index("heartbeats_received_at").on(t.receivedAt),
   ],
 );
+
+/** Repositories the server mirrors, with the outcome of the last fetch. */
+export const repos = pgTable("repos", {
+  repo: text().primaryKey(),
+  addedAt: timestamp("added_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  lastFetchAt: timestamp("last_fetch_at", { withTimezone: true, mode: "date" }),
+  lastError: text("last_error"),
+});

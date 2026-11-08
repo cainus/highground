@@ -96,6 +96,28 @@ describe("CollisionTracker", () => {
     expect(events).toHaveLength(2);
   });
 
+  it("re-announces when a speculative merge confirms or refutes the collision", () => {
+    const { events, send } = setup();
+    const head = "1".repeat(40);
+    send(
+      heartbeat(BOB, [file("a.ts", [10, 12])], { kind: "pushed", branch: "b1", head_sha: head }),
+    );
+    send(heartbeat(ALICE, [file("a.ts", [11, 11])]));
+    events.length = 0;
+    send(
+      heartbeat(ALICE, [file("a.ts", [11, 11])], {
+        merges: [{ branch: "b1", head_sha: head, conflicts: ["a.ts"] }],
+      }),
+    );
+    expect(events.map((e) => [e.workingCopyId, e.event])).toEqual(
+      expect.arrayContaining([
+        [ALICE, "collision_started"],
+        [BOB, "collision_started"],
+      ]),
+    );
+    expect(events).toHaveLength(2);
+  });
+
   it("tracks each peer separately and ignores bystanders", () => {
     const { events, send } = setup();
     send(heartbeat(BOB, [file("a.ts", [1, 5])]));

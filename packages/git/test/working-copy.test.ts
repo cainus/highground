@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  derivedId,
   ensureIdentity,
   fileHunks,
   findIdentity,
@@ -163,5 +164,15 @@ describe("watchTargets", () => {
         join(root, ".git"),
       ].sort(),
     );
+  });
+});
+
+describe("derivedId", () => {
+  it("is a stable UUID per name, distinct between names and never split ambiguously", () => {
+    const id = derivedId("pushed", "github.com/acme/api", "feature/x");
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(derivedId("pushed", "github.com/acme/api", "feature/x")).toBe(id);
+    expect(derivedId("parked", "github.com/acme/api", "feature/x")).not.toBe(id);
+    expect(derivedId("a", "bc")).not.toBe(derivedId("ab", "c"));
   });
 });

@@ -1,13 +1,14 @@
-import type {
-  CollisionEvent,
-  Heartbeat,
-  Warning,
-  WarningsQuery,
-  WarningsResponse,
+import {
+  HeartbeatSchema,
+  type CollisionEvent,
+  type Heartbeat,
+  type Warning,
+  type WarningsQuery,
+  type WarningsResponse,
 } from "@highground/core";
 import { CollisionTracker } from "./collision-tracker.ts";
 import type { HeartbeatLog } from "./db/heartbeat-log.ts";
-import { LiveIndex } from "./live-index.ts";
+import { LiveIndex, type Oracle, type PathRef } from "./live-index.ts";
 
 /** The longest TTL a heartbeat may have; rebuilding replays this much of the log. */
 const MAX_TTL_MS = 300_000;
@@ -18,6 +19,8 @@ export interface HubOptions {
   /** How often expired entries are swept, so their collisions end. */
   sweepMs: number;
   now?: () => number;
+  /** The mirror's knowledge, for translation and speculative merges. */
+  oracle?: Oracle;
 }
 
 type Listener = (event: CollisionEvent) => void;
@@ -32,7 +35,7 @@ const respond = (warnings: Warning[]): WarningsResponse => ({
  * subscriptions and presence. Every state change goes through the log first.
  */
 export class Hub {
-  readonly index = new LiveIndex();
+  readonly index: LiveIndex;
   readonly #tracker: CollisionTracker;
   readonly #listeners = new Map<string, Set<Listener>>();
   readonly #openStreams = new Map<string, number>();
@@ -49,6 +52,7 @@ export class Hub {
     this.#log = log;
     this.#options = options;
     this.#now = options.now ?? Date.now;
+    this.index = new LiveIndex(options.oracle);
     this.#tracker = new CollisionTracker(this.index, (repo, workingCopyId, event) => {
       for (const listener of this.#listeners.get(`${repo}\0${workingCopyId}`) ?? [])
         listener(event);
@@ -102,11 +106,21 @@ export class Hub {
             baseSha: heartbeat.base_sha,
             changes: file.changes,
             wholeFile: file.whole_file,
+            branch: heartbeat.branch,
+            kind: heartbeat.kind,
+            headSha: heartbeat.head_sha,
+            lastCommitAt: heartbeat.last_commit_at ? Date.parse(heartbeat.last_commit_at) : null,
+            merges: heartbeat.merges,
           },
           now,
         ),
       ),
     );
+  }
+
+  /** Recomputes collisions on paths whose answers changed, such as when the mirror learns a translation. */
+  refresh(paths: PathRef[]): void {
+    if (!this.#stopped) this.#tracker.refresh(paths, this.#now());
   }
 
   query(query: WarningsQuery): WarningsResponse {
@@ -118,6 +132,7 @@ export class Hub {
           workingCopyId: query.working_copy_id,
           baseSha: query.base_sha,
           changes: [{ range: [query.start, query.end], digest: null }],
+          ...(query.branch ? { branch: query.branch } : {}),
         },
         this.#now(),
       ),
@@ -191,17 +206,18 @@ export class Hub {
   /** Clears every actor of a vanished working copy through the log, so it is durable. */
   #clear(repo: string, workingCopyId: string): void {
     for (const state of this.index.actorsOf(repo, workingCopyId)) {
-      this.heartbeat({
-        repo,
-        working_copy_id: workingCopyId,
-        actor: state.actor,
-        author: state.author,
-        branch: state.branch,
-        base_sha: state.baseSha,
-        scope: "complete",
-        files: [],
-        ttl_seconds: 60,
-      });
+      this.heartbeat(
+        HeartbeatSchema.parse({
+          repo,
+          working_copy_id: workingCopyId,
+          actor: state.actor,
+          author: state.author,
+          branch: state.branch,
+          base_sha: state.baseSha,
+          scope: "complete",
+          files: [],
+        }),
+      );
     }
   }
 }

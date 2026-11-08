@@ -62,6 +62,9 @@ importers:
       '@highground/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@highground/git':
+        specifier: workspace:*
+        version: link:../../packages/git
       '@orpc/openapi':
         specifier: ^1.16.2
         version: 1.16.2(fastify@5.12.8)

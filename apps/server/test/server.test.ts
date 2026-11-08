@@ -1,9 +1,10 @@
-import type { HeartbeatInput } from "@highground/core";
+import { HeartbeatSchema, type HeartbeatInput } from "@highground/core";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { allowAll } from "../src/auth.ts";
 import { startServer, type RunningServer } from "../src/server.ts";
 import { freshDatabase } from "./database.ts";
-import { ALICE, BOB, REPO, SHA } from "./fixtures.ts";
+import { ALICE, BOB, CAROL, REPO, SHA } from "./fixtures.ts";
 
 let db: Awaited<ReturnType<typeof freshDatabase>>;
 const running: RunningServer[] = [];
@@ -24,7 +25,7 @@ afterAll(async () => {
 async function server(
   options: { graceMs?: number; sweepMs?: number } = {},
 ): Promise<RunningServer> {
-  const s = await startServer({ databaseUrl: db.url, port: 0, ...options });
+  const s = await startServer({ databaseUrl: db.url, port: 0, auth: allowAll, ...options });
   running.push(s);
   return s;
 }
@@ -60,6 +61,7 @@ async function query(
   path: string,
   start: number,
   end: number,
+  extra: Record<string, string> = {},
 ) {
   const params = new URLSearchParams({
     repo: REPO,
@@ -68,6 +70,7 @@ async function query(
     end: String(end),
     working_copy_id: workingCopyId,
     base_sha: SHA,
+    ...extra,
   });
   const res = await fetch(`${s.url}/api/v1/warnings?${params}`);
   return (await res.json()) as {
@@ -131,6 +134,27 @@ describe("REST", () => {
   it("rejects an invalid heartbeat with 400", async () => {
     const s = await server();
     expect((await post(s, body(BOB, [lines("a.ts", 9, 5)]))).status).toBe(400);
+  });
+
+  it("refuses pushed work from a client: only the server's mirror publishes it", async () => {
+    const s = await server();
+    const res = await post(s, body(BOB, [lines("a.ts", 1, 2)], { kind: "pushed" }));
+    expect(res.status).toBe(403);
+  });
+
+  it("leaves out the pushed copy of the asker's own branch", async () => {
+    const s = await server();
+    s.hub.heartbeat(
+      HeartbeatSchema.parse(
+        body(CAROL, [lines("a.ts", 10, 12)], {
+          kind: "pushed",
+          branch: "feature",
+          head_sha: "c".repeat(40),
+        }),
+      ),
+    );
+    expect((await query(s, ALICE, "a.ts", 11, 11)).warnings).toHaveLength(1);
+    expect((await query(s, ALICE, "a.ts", 11, 11, { branch: "feature" })).warnings).toEqual([]);
   });
 
   it("writes every heartbeat to the log within a flush of acknowledging it", async () => {

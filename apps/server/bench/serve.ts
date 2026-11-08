@@ -6,6 +6,7 @@
 import { subscribe } from "node:diagnostics_channel";
 import type { IncomingMessage } from "node:http";
 import { createHistogram, monitorEventLoopDelay } from "node:perf_hooks";
+import { allowAll } from "../src/auth.ts";
 import { startServer } from "../src/server.ts";
 
 const loop = monitorEventLoopDelay({ resolution: 1 });
@@ -37,7 +38,11 @@ process.on("SIGUSR2", () => {
 });
 loop.enable();
 
-const server = await startServer({ databaseUrl: process.env.DATABASE_URL!, port: 0 });
+const server = await startServer({
+  databaseUrl: process.env.DATABASE_URL!,
+  port: 0,
+  auth: allowAll,
+});
 console.log(server.url);
 
 const summary = (h: { percentile(p: number): number; max: number }) => ({

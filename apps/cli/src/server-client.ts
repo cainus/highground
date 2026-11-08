@@ -5,9 +5,25 @@ import type { ContractRouterClient } from "@orpc/contract";
 
 export type ServerClient = ContractRouterClient<typeof contract>;
 
-/** A typed client for a Highground server's RPC endpoint. */
-export function serverClient(url: string): ServerClient {
-  return createORPCClient(new RPCLink({ url: `${url.replace(/\/+$/, "")}/rpc` }));
+/** Where a client gets the user's token; see `Credentials`. */
+export interface TokenSource {
+  token(): Promise<string | undefined>;
+}
+
+/**
+ * A typed client for a Highground server's RPC endpoint. With `credentials`, each request
+ * carries the user's current token, so a refresh takes effect without a new client.
+ */
+export function serverClient(url: string, credentials?: TokenSource): ServerClient {
+  return createORPCClient(
+    new RPCLink({
+      url: `${url.replace(/\/+$/, "")}/rpc`,
+      headers: async (): Promise<Record<string, string>> => {
+        const token = await credentials?.token();
+        return token ? { authorization: `Bearer ${token}` } : {};
+      },
+    }),
+  );
 }
 
 /** A one-line reason for a failure, including a network error's cause. */

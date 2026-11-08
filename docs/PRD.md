@@ -67,7 +67,7 @@ Each range from a diff carries a **digest**: SHA-256 of the lines that replace i
 - **Working copy** — UUID in `.highground/id` (ADR 0005). The unit of "self": warnings are suppressed only between ranges from the same working copy.
 - **Actor** — `{type: "human" | "agent" | "cli", id}` acting within a working copy.
 - **Author** — the person, by git email.
-- **Parked work** reports under the synthetic working copy `<repo>:parked:<branch>`, so it warns against its owner's own live work.
+- **Parked work** reports under a working copy id derived from the working copy's id and the branch name, so it warns against its owner's own live work.
 - **Pushed work** is reported by the server from its mirror; its actor is the branch, its author the head commit's author, with PR link when one exists.
 
 ## 4. Detection
@@ -84,17 +84,17 @@ Between two files, the most severe pair wins (DIRECT_OVERLAP > DUPLICATE_CHANGE 
 
 Further rules:
 
-- **Suppression** — ranges from the same working copy never warn against each other.
+- **Suppression** — ranges from the same working copy never warn against each other, and work never warns against the pushed copy of its own branch.
 - **Dormancy** — parked or pushed work with no commit for 7 days drops one severity (HIGH→MEDIUM, MEDIUM→LOW).
 - **Translation** — between differing bases, a range is mapped through `git diff -U0 baseA baseB`: lines unchanged between the bases map exactly; a range that meets a change between the bases is widened over what replaced it and the warning is marked approximate.
 - **Confidence**
   - `approximate: true` when the two bases differ and either the mirror cannot yet translate between them or the range met a change between the bases.
   - `confirmed: true | false` when a speculative merge (ADR 0003) has run: true if `git merge-tree` reports a conflict, false if it merges cleanly (the warning is then downgraded to MEDIUM). Absent when no speculative merge was possible (live ↔ live).
-  - Speculative merges run pushed ↔ pushed on the server and live/parked ↔ pushed in the daemon, filtered to branches touching the same files and debounced. Proximity alerts are never confirmed.
+  - Speculative merges run pushed ↔ pushed on the server's mirror. Live/parked ↔ pushed merges run in the daemon, for each direct overlap or duplicate with a pushed peer: the working tree's snapshot (or the parked head) merged with the peer's `head_sha`. The daemon reports the result in its heartbeat's `merges`, and it counts only while that head is current. Proximity alerts are never confirmed.
 
 ## 5. API
 
-oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` with a generated OpenAPI document, and as a typed client for the dashboard. All endpoints require a Highground token (§7).
+oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` with a generated OpenAPI document, and as a typed client for the dashboard. Heartbeat, warnings and subscribe require the user's GitHub token (§7).
 
 ### 5.1 `POST /api/v1/heartbeat`
 
@@ -124,11 +124,12 @@ oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` w
 - A heartbeat replaces the previous changes for **(repo, working copy, actor, file)**. Empty `changes` clears a file.
 - `scope: "complete"` — the batch is the actor's entire state; files it omits are cleared. `scope: "partial"` — only listed files are replaced.
 - `ttl_seconds` 5–300, default 60. Limits: `intent` ≤ 280 chars, ≤ 50 ranges per file, ≤ 200 files per heartbeat.
+- Optional fields: `kind` (`live` by default, or `parked`; `pushed` is refused, since only the server publishes it), `head_sha` and `last_commit_at` for parked work, and `merges: [{branch, head_sha, conflicts}]`, the daemon's speculative merges with pushed heads.
 - The heartbeat is applied and acknowledged at once; the log write follows within about 5 ms, group-committed and retried until it lands (ADR 0002). The response contains the current warnings for the submitted ranges.
 
 ### 5.2 `GET /api/v1/warnings`
 
-Query: `repo`, `path`, `start`, `end`, `working_copy_id`, `base_sha`. Read-only check; the caller's own working copy is suppressed.
+Query: `repo`, `path`, `start`, `end`, `working_copy_id`, `base_sha`, optional `branch`. Read-only check; the caller's own working copy, and the pushed copy of its branch, are suppressed.
 
 ### 5.3 Warning payload
 
@@ -146,6 +147,7 @@ Query: `repo`, `path`, `start`, `end`, `working_copy_id`, `base_sha`. Read-only 
         "author": "bob@acme.com",
         "kind": "live",
         "branch": "feature/refactor-auth",
+        "head_sha": null,
         "pr_url": null,
         "lines": [50, 75],
         "intent": "converting jwt verify to async/await",
@@ -158,16 +160,20 @@ Query: `repo`, `path`, `start`, `end`, `working_copy_id`, `base_sha`. Read-only 
 }
 ```
 
-`peer.kind` is `live`, `parked`, or `pushed`. Line numbers are base coordinates on the wire; the daemon and MCP server translate them to working-copy coordinates before showing them.
+`peer.kind` is `live`, `parked`, or `pushed`; `peer.head_sha` is set for parked and pushed peers. Line numbers are base coordinates on the wire; the daemon and MCP server translate them to working-copy coordinates before showing them.
 
 ### 5.4 `GET /api/v1/subscribe` (SSE)
 
-- Per working copy: `collision_started` / `collision_ended` events carrying the warning payload, emitted whenever a heartbeat or a fetch changes the collisions with that working copy's current ranges; `branch_updated` events telling the daemon which pushed refs to fetch for speculative merges.
+- Per working copy: `collision_started` / `collision_ended` events carrying the warning payload, emitted whenever a heartbeat, a fetch or a confirmation changes the collisions with that working copy's current ranges. A pushed peer's `head_sha` tells the daemon which commit to fetch for a speculative merge.
 - Per repo (dashboard): every change to the live index.
 - Resumes with `Last-Event-ID`.
 - **Presence:** if a working copy's stream closes and does not reconnect within 10 s, its live ranges are cleared immediately. TTL remains the backstop for clients without a stream.
 
-### 5.5 `POST /api/v1/logs`
+### 5.5 `GET /api/v1/auth/github`, `POST /api/v1/auth/refresh`
+
+The instance's GitHub App client id and GitHub URL, for the device flow; and a refresh-token exchange, so that the App's client secret stays on the server. Both answer 404 without a GitHub App.
+
+### 5.6 `POST /api/v1/logs`
 
 Frontend log batches (§9).
 
@@ -175,9 +181,9 @@ Frontend log batches (§9).
 
 One CLI, `highground`:
 
-- **`login`** — GitHub device flow; stores the Highground token.
+- **`login [--server URL]`** — GitHub device flow with the server's App. Stores the tokens in `~/.config/highground/credentials.json` (0600), one entry per server, and refreshes them through the server shortly before they expire. `HIGHGROUND_TOKEN` overrides the stored sign-in, for containers.
 - **`watch [dir]`** — registers a working copy in `~/.config/highground/config.json`; a running daemon starts reporting it at once.
-- **`daemon`** — runs wherever git works for the working copies it watches (inside a container or on a host). Watches registered working copies; on save, debounced 500 ms, computes base-coordinate ranges and sends a complete heartbeat; re-sends its complete snapshot every 20 s as keepalive. Scans local branches for parked work. Runs speculative merges for pushed refs the server announces. Never fetches the remote on its own schedule. Writes `.highground/id` and `.highground/daemon.json` (addresses + per-daemon secret) into each working copy and adds `.highground/` to `.git/info/exclude`.
+- **`daemon`** — runs wherever git works for the working copies it watches (inside a container or on a host). Watches registered working copies; on save, debounced 500 ms, computes base-coordinate ranges and sends a complete heartbeat; re-sends its complete snapshot every 20 s as keepalive. Scans local branches for parked work. Runs speculative merges with the pushed heads it collides with. Never fetches the remote on its own schedule. Writes `.highground/id` and `.highground/daemon.json` (addresses + per-daemon secret) into each working copy and adds `.highground/` to `.git/info/exclude`.
 - **`mcp`** — stdio MCP server, one per agent. Tools:
   - `broadcast_edit_intent(path, ranges[], intent, ttl_seconds)` — ranges in working-copy coordinates; sent as a partial heartbeat for the agent actor; returns current collisions in working-copy coordinates.
   - `check_file_radar(path, ranges[])` — read-only check.
@@ -189,7 +195,7 @@ Human IDE extensions (VS Code first) are v2.
 
 ## 7. Auth
 
-GitHub is the identity provider and the source of repository access (ADR 0004). Device flow for the CLI, OAuth for the dashboard. Every request checks the user's GitHub read access to the repo, cached ~5 min. The server's mirror and PR lookups use a per-organization GitHub App with read-only contents permission. The daemon's local endpoint requires the per-daemon secret from `daemon.json`.
+GitHub is the identity provider and the source of repository access (ADR 0004). Device flow for the CLI, OAuth for the dashboard, both through the instance's one GitHub App. Every heartbeat, query and subscription checks the user's GitHub read access to the repo: 401 for a missing or rejected token, 403 for no access. Answers are cached for 5 minutes, refusals for 30 seconds. The same App, installed per organization with read-only contents permission, serves the mirror and PR lookups. A server without a GitHub App must be started with an explicit authorizer. The daemon's local endpoint requires the per-daemon secret from `daemon.json`.
 
 ## 8. Storage
 

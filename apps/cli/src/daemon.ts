@@ -6,7 +6,8 @@ import type { RepoState } from "@highground/git";
 import type { Log } from "@highground/log";
 import { implement, ORPCError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/node";
-import { configFile, readConfig } from "./config.ts";
+import { configDir, configFile, readConfig } from "./config.ts";
+import { Credentials } from "./credentials.ts";
 import { daemonFilePath, type DaemonFile } from "./discovery.ts";
 import { daemonContract } from "./local-contract.ts";
 import { broadcastIntent, checkRadar } from "./radar.ts";
@@ -20,6 +21,8 @@ export interface DaemonOptions {
   dirs: string[];
   /** Where `config.json` lives; its working copies are watched, and re-read when it changes. */
   configDir?: string;
+  /** For `HIGHGROUND_TOKEN`; the process's own by default. */
+  env?: NodeJS.ProcessEnv;
   log: Log;
   /** The local endpoint's interface; 127.0.0.1 unless containers must reach it over a bridge. */
   listen?: string;
@@ -47,7 +50,11 @@ export class Daemon {
 
   constructor(options: DaemonOptions) {
     this.#options = options;
-    this.#client = serverClient(options.server);
+    const env = options.env ?? process.env;
+    this.#client = serverClient(
+      options.server,
+      new Credentials({ dir: options.configDir ?? configDir(env), server: options.server, env }),
+    );
   }
 
   async start(): Promise<void> {

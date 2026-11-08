@@ -28,6 +28,7 @@ describe("LiveIndex", () => {
           author: "2222@acme.com",
           kind: "live",
           branch: "feature",
+          head_sha: null,
           pr_url: null,
           lines: [50, 75],
           intent: "async verify",

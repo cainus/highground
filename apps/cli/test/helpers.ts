@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { HeartbeatInput, WarningsResponse } from "@highground/core";
+import { allowAll } from "../../server/src/auth.ts";
 import { startServer, type RunningServer } from "../../server/src/server.ts";
 import { freshDatabase } from "../../server/test/database.ts";
 import { makeRepo, run } from "../../../packages/git/test/helpers.ts";
@@ -36,10 +41,25 @@ export interface TestServer {
   close(): Promise<void>;
 }
 
-/** A real Highground server on a fresh database. */
-export async function testServer(port = 0): Promise<TestServer> {
+/** A real Highground server on a fresh database; with `mirrorOf`, it mirrors that origin. */
+export async function testServer(port = 0, mirrorOf?: string): Promise<TestServer> {
   const db = await freshDatabase();
-  const server = await startServer({ databaseUrl: db.url, port, graceMs: 200, sweepMs: 100 });
+  const server = await startServer({
+    databaseUrl: db.url,
+    port,
+    auth: allowAll,
+    graceMs: 200,
+    sweepMs: 100,
+    ...(mirrorOf
+      ? {
+          mirror: {
+            dir: mkdtempSync(join(tmpdir(), "highground-cli-mirror-")),
+            fetchMs: 3_600_000,
+            remote: { url: () => mirrorOf, config: async () => ({}) },
+          },
+        }
+      : {}),
+  });
   return {
     server,
     url: server.url,
@@ -108,4 +128,21 @@ export async function eventually<T>(check: () => Promise<T> | T, timeoutMs = 5_0
       await new Promise((r) => setTimeout(r, 25));
     }
   }
+}
+
+/**
+ * A clone of a local origin that calls itself `github.com/acme/<name>`: its remote URL
+ * looks like GitHub, and `url.insteadOf` sends git to the local origin.
+ */
+export function cloneWorkingCopy(origin: string): WorkingCopy {
+  const dir = mkdtempSync(join(tmpdir(), "highground-clone-"));
+  const name = `api-${process.pid}-${++repos}`;
+  const url = `git@github.com:acme/${name}.git`;
+  execFileSync("git", ["clone", "-q", "--no-local", origin, dir]);
+  run(dir, "remote", "set-url", "origin", url);
+  run(dir, "config", `url.${origin}.insteadOf`, url);
+  run(dir, "config", "user.email", "me@example.com");
+  run(dir, "config", "user.name", "Me");
+  run(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+  return { dir, base: run(dir, "rev-parse", "origin/main"), repo: `github.com/acme/${name}` };
 }

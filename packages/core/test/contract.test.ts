@@ -20,6 +20,13 @@ describe("HeartbeatSchema", () => {
   it("accepts a heartbeat and fills defaults", () => {
     const parsed = HeartbeatSchema.parse(heartbeat());
     expect(parsed.ttl_seconds).toBe(60);
+    expect(parsed).toMatchObject({
+      kind: "live",
+      head_sha: null,
+      last_commit_at: null,
+      pr_url: null,
+      merges: [],
+    });
     expect(parsed.files[0]).toEqual({
       path: "src/auth/jwt.py",
       whole_file: false,
@@ -88,6 +95,29 @@ describe("HeartbeatSchema", () => {
     expect(HeartbeatSchema.safeParse(heartbeat(overrides)).success).toBe(false);
   });
 
+  it("accepts parked work with its head, last commit, and merge results", () => {
+    const parked = heartbeat({
+      kind: "parked",
+      head_sha: "c".repeat(40),
+      last_commit_at: "2026-11-01T10:00:00Z",
+      merges: [{ branch: "feature/x", head_sha: "d".repeat(40), conflicts: ["src/a.ts"] }],
+    });
+    expect(HeartbeatSchema.safeParse(parked).success).toBe(true);
+  });
+
+  it.each([
+    ["an unknown kind", { kind: "stashed" }],
+    ["a merge result without a head", { merges: [{ branch: "x", conflicts: [] }] }],
+    [
+      "a merge conflict outside the repo",
+      { merges: [{ branch: "x", head_sha: "d".repeat(40), conflicts: ["/etc/x"] }] },
+    ],
+    ["a last commit that isn't a timestamp", { last_commit_at: "yesterday" }],
+    ["a PR link that isn't a URL", { pr_url: "#42" }],
+  ])("rejects %s", (_name, overrides) => {
+    expect(HeartbeatSchema.safeParse(heartbeat(overrides)).success).toBe(false);
+  });
+
   it("accepts a SHA-256 repository's 64-character commit ids", () => {
     expect(HeartbeatSchema.safeParse(heartbeat({ base_sha: "b".repeat(64) })).success).toBe(true);
   });
@@ -104,6 +134,20 @@ describe("WarningsQuerySchema", () => {
       base_sha: SHA,
     });
     expect([parsed.start, parsed.end]).toEqual([10, 20]);
+    expect(parsed.branch).toBeUndefined();
+  });
+
+  it("takes the asker's branch, so its own pushed copy can be left out", () => {
+    const parsed = WarningsQuerySchema.parse({
+      repo: "github.com/acme/api",
+      path: "a.ts",
+      start: "1",
+      end: "1",
+      working_copy_id: WC,
+      base_sha: SHA,
+      branch: "feature/x",
+    });
+    expect(parsed.branch).toBe("feature/x");
   });
 });
 

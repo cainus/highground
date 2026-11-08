@@ -3,19 +3,22 @@
  * `highground daemon [dir…] [--server URL] [--listen HOST] [--port N]`
  * `highground watch [dir]`
  * `highground mcp`
+ * `highground login [--server URL]`
  */
 import { parseArgs } from "node:util";
 import { repoState } from "@highground/git";
 import { cliLogDir, createLog, prunePeriodically } from "@highground/log";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { addWorkingCopy, configDir, readConfig } from "./config.ts";
+import { login } from "./credentials.ts";
 import { Daemon } from "./daemon.ts";
 import { createMcpServer } from "./mcp.ts";
 
 const USAGE = `usage:
   highground daemon [dir…] [--server URL] [--listen HOST] [--port N]
   highground watch [dir]
-  highground mcp`;
+  highground mcp
+  highground login [--server URL]`;
 
 const [command, ...rest] = process.argv.slice(2);
 const logDir = cliLogDir();
@@ -57,6 +60,19 @@ if (command === "daemon") {
   });
   const added = await addWorkingCopy(configDir(), state.root);
   console.error(`${added ? "watching" : "already watching"} ${state.root}`);
+} else if (command === "login") {
+  const { values } = parseArgs({ args: rest, options: { server: { type: "string" } } });
+  const dir = configDir();
+  const server =
+    values.server ?? process.env.HIGHGROUND_SERVER_URL ?? (await readConfig(dir)).server;
+  if (!server) {
+    console.error("highground login: no server; pass --server or set HIGHGROUND_SERVER_URL");
+    process.exit(2);
+  }
+  await login({ server, dir, print: (line) => console.error(line) }).catch((error: unknown) => {
+    console.error(`highground login: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
 } else if (command === "mcp") {
   // stdout carries only protocol messages; everything else goes to the log file.
   const log = createLog({ service: "mcp", dir: logDir });

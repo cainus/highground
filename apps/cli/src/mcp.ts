@@ -12,6 +12,8 @@ import { z } from "zod";
 import { daemonFilePath, DaemonFileSchema, type DaemonFile } from "./discovery.ts";
 import type { daemonContract } from "./local-contract.ts";
 import { broadcastIntent, checkRadar } from "./radar.ts";
+import { configDir } from "./config.ts";
+import { Credentials } from "./credentials.ts";
 import { describeError, serverClient } from "./server-client.ts";
 
 export interface McpOptions {
@@ -136,7 +138,7 @@ export function createMcpServer({ cwd, env, log, daemonTimeoutMs = 1_500 }: McpO
       const context = {
         state: await repoState(root),
         workingCopyId: id,
-        server: serverClient(url),
+        server: serverClient(url, new Credentials({ dir: configDir(env), server: url, env })),
       };
       return call.kind === "intent"
         ? await broadcastIntent(context, { actor: actor(), ...call })

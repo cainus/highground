@@ -309,3 +309,204 @@ export async function watchTargets(root: string): Promise<string[]> {
   }
   return [...dirs];
 }
+
+/** Git configuration passed through the environment, so secrets never appear in argv. */
+function configEnv(config: Record<string, string>): Record<string, string> {
+  const entries = Object.entries(config);
+  const env: Record<string, string> = {
+    GIT_CONFIG_COUNT: String(entries.length),
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  entries.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return env;
+}
+
+/** Creates a bare mirror of `url` at `dir` whose branches are the remote's, or repoints an existing one. */
+export async function initMirror(dir: string, url: string): Promise<void> {
+  const exists = await readFile(join(dir, "HEAD"), "utf8").then(
+    () => true,
+    () => false,
+  );
+  if (!exists) {
+    await mkdir(dir, { recursive: true });
+    await git(dir, ["init", "--bare", "-q"]);
+    await git(dir, ["remote", "add", "origin", url]);
+    await git(dir, ["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]);
+  } else {
+    await git(dir, ["remote", "set-url", "origin", url]);
+  }
+}
+
+/**
+ * Fetches every branch, pruning deleted ones, and follows the remote's default branch.
+ * `config` carries credentials, such as an `http.extraHeader`.
+ */
+export async function fetchMirror(dir: string, config: Record<string, string> = {}): Promise<void> {
+  const env = configEnv(config);
+  await git(dir, ["fetch", "--prune", "--quiet", "origin"], { env });
+  const head = await git(dir, ["ls-remote", "--symref", "origin", "HEAD"], { env });
+  const target = /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(head.stdout)?.[1];
+  if (target) await git(dir, ["symbolic-ref", "HEAD", target]);
+}
+
+/** The mirror's default branch name. */
+export async function defaultBranch(dir: string): Promise<string> {
+  return (await git(dir, ["symbolic-ref", "--short", "HEAD"])).stdout.trim();
+}
+
+export interface Branch {
+  name: string;
+  head: string;
+  /** The head commit's author email. */
+  author: string;
+  /** The head commit's committer date, ISO 8601. */
+  committedAt: string;
+}
+
+/** Every branch in a mirror, by name. */
+export async function branches(dir: string): Promise<Branch[]> {
+  const out = await git(dir, [
+    "for-each-ref",
+    "--sort=refname",
+    "--format=%(refname:short)%00%(objectname)%00%(authoremail:trim)%00%(committerdate:iso-strict)",
+    "refs/heads",
+  ]);
+  return out.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [name, head, author, committedAt] = line.split("\0") as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      return { name, head, author, committedAt };
+    });
+}
+
+/** Whether a commit is present. */
+export async function hasCommit(dir: string, sha: string): Promise<boolean> {
+  return (await optional(dir, ["cat-file", "-e", `${sha}^{commit}`])) !== null;
+}
+
+/** The changes from `base` to `head`, as per-path reports in `base` coordinates. */
+export async function diffCommits(dir: string, base: string, head: string): Promise<FileReport[]> {
+  const diff = await git(dir, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "-U0",
+    "-M",
+    "--histogram",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    base,
+    head,
+  ]);
+  return reportsFromDiff(parseDiff(diff.stdout), digestLines);
+}
+
+/**
+ * Each path's hunks between two commits, for translating ranges from one base to the
+ * other. An unchanged path maps to no hunks; a binary one is left out, as untranslatable.
+ */
+export async function diffPaths(
+  dir: string,
+  from: string,
+  to: string,
+  paths: string[],
+): Promise<Map<string, Hunk[]>> {
+  const diff = await git(dir, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "-U0",
+    "--histogram",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    from,
+    to,
+    "--",
+    ...paths,
+  ]);
+  const result = new Map<string, Hunk[]>(paths.map((path) => [path, []]));
+  for (const file of parseDiff(diff.stdout)) {
+    const path = file.basePath ?? file.newPath;
+    if (path === null) continue;
+    if (file.binary) result.delete(path);
+    else result.set(path, file.hunks);
+  }
+  return result;
+}
+
+/**
+ * A stable UUID (version 8) naming something that has no identity file of its own, such
+ * as a pushed branch or a working copy's parked branch.
+ */
+export function derivedId(...parts: string[]): string {
+  const hex = createHash("sha256").update(parts.join("\0")).digest("hex");
+  const variant = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** The best common ancestor of two commits. */
+export async function mergeBaseOf(dir: string, a: string, b: string): Promise<string> {
+  return (await git(dir, ["merge-base", a, b])).stdout.trim();
+}
+
+export interface ParkedBranch extends Branch {
+  /** Its merge-base with the default branch. */
+  base: string;
+}
+
+/**
+ * Local branches other than `current` holding commits that are on neither the default
+ * branch nor the branch's own upstream: work only this working copy has.
+ */
+export async function parkedBranches(
+  dir: string,
+  defaultRef: string,
+  current: string,
+): Promise<ParkedBranch[]> {
+  const out = await git(dir, [
+    "for-each-ref",
+    "--sort=refname",
+    "--format=%(refname:short)%00%(objectname)%00%(upstream)%00%(authoremail:trim)%00%(committerdate:iso-strict)",
+    "refs/heads",
+  ]);
+  const parked: ParkedBranch[] = [];
+  for (const line of out.stdout.split("\n").filter(Boolean)) {
+    const [name, head, upstream, author, committedAt] = line.split("\0") as [
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    if (name === current) continue;
+    const base = await mergeBaseOf(dir, defaultRef, head).catch(() => null);
+    if (base === null || base === head) continue;
+    // Everything on its upstream is pushed work, which the server reports.
+    if (
+      upstream &&
+      (await optional(dir, ["merge-base", "--is-ancestor", head, upstream])) !== null
+    ) {
+      continue;
+    }
+    parked.push({ name, head, author, committedAt, base });
+  }
+  return parked;
+}
+
+/** Fetches one commit from `origin` by id, writing no refs and no FETCH_HEAD. */
+export async function fetchCommit(dir: string, sha: string): Promise<void> {
+  await git(dir, ["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", "origin", sha], {
+    env: { GIT_TERMINAL_PROMPT: "0" },
+  });
+}

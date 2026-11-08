@@ -1,13 +1,17 @@
 import type { CollisionEvent, Warning } from "@highground/core";
 import type { LiveIndex, PathRef } from "./live-index.ts";
 
+/** What about a collision is worth announcing again when it changes. */
+const verdictOf = (w: Warning) => `${w.type}/${w.severity}/${w.confirmed}/${w.approximate}`;
+
 export type EmitCollision = (repo: string, workingCopyId: string, event: CollisionEvent) => void;
 
 /**
  * Turns index changes into per-working-copy collision events. After any change to a
  * path it recomputes the collisions of every working copy on that path and emits the
- * difference: a new collision, or a change in its type, starts; a vanished one ends.
- * Lines moving within the same type of collision stay quiet.
+ * difference: a new collision, or a change in its verdict — type, severity, confirmation
+ * or approximation — starts; a vanished one ends. Lines moving under the same verdict
+ * stay quiet.
  */
 export class CollisionTracker {
   /** `repo\0path` → working copy → peer actor → last warning */
@@ -33,7 +37,8 @@ export class CollisionTracker {
       const current = next.get(workingCopyId) ?? new Map<string, Warning>();
       const before = previous.get(workingCopyId) ?? new Map<string, Warning>();
       for (const [peer, warning] of current) {
-        if (before.get(peer)?.type !== warning.type) {
+        const held = before.get(peer);
+        if (!held || verdictOf(held) !== verdictOf(warning)) {
           this.#emit(repo, workingCopyId, { event: "collision_started", warning });
         }
       }

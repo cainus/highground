@@ -93,6 +93,7 @@ export async function checkRadar(
         end,
         working_copy_id: workingCopyId,
         base_sha: state.base,
+        branch: state.branch,
       }),
     ),
   );
