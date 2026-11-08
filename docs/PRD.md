@@ -218,7 +218,7 @@ Postgres via Drizzle (ADR 0002).
 ## 9. Logging
 
 - pino everywhere; every line is one JSON object with `time`, `level`, `service`, `msg`, and `requestId` where applicable.
-- **Server:** one combined file per day, `logs/highground-YYYY-MM-DD.jsonl` at the repo root (`LOG_DIR` overrides), containing `service: "backend"` and `service: "frontend"` lines interleaved; also stdout in production.
+- **Server:** one combined file per day, `logs/highground-YYYY-MM-DD.jsonl` at the repo root (`LOG_DIR` overrides), containing `service: "backend"` and `service: "frontend"` lines interleaved; also stdout in production (`LOG_STDOUT`). Every request has a `requestId`, the client's `x-request-id` when it is a short token, echoed in the response. Requests are not logged one line each: unexpected failures are, with their stack, and so are requests over 1 s.
 - **Frontend:** batches to `POST /api/v1/logs`, `sendBeacon` on unload; captures `window.onerror`, `unhandledrejection`, and React error boundaries; sends `requestId` on every API call. The server stamps `service: "frontend"`, validates with Zod, and caps 64 KB per batch and 100 lines/min per session.
 - **CLI:** `service: "daemon"` / `"mcp"` to `~/.local/state/highground/logs/`, same format.
 - **Retention:** on startup and hourly, delete log files whose day is more than 72 h old (age-based, not count-based).
@@ -248,7 +248,7 @@ apps/web        dashboard
 apps/cli        highground login | daemon | mcp
 ```
 
-Tooling: TypeScript, Vitest, Oxfmt + Oxlint, Drizzle. Shipped as one Docker image (`ghcr.io/cainus/highground`: server + built dashboard) with a `docker-compose.yml` adding Postgres and a mirror volume; local development uses the same compose file.
+Tooling: TypeScript, Vitest, Oxfmt + Oxlint, Drizzle. Shipped as one Docker image (`ghcr.io/cainus/highground`: server + built dashboard) with a `docker-compose.yml` adding Postgres and a `/data` volume for the mirror and logs; local development uses the same compose file. The server is configured from the environment (README), reports `GET /healthz`, and stops cleanly on `SIGTERM`.
 
 ## 12. Acceptance criteria
 

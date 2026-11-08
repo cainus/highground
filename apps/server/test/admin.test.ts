@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Admin } from "@highground/core";
-import { createLog } from "@highground/log";
+import { createLogs } from "@highground/log";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startServer, type RunningServer } from "../src/server.ts";
@@ -54,7 +54,7 @@ async function server(): Promise<RunningServer> {
       apiUrl: gh.url,
       webUrl: gh.url,
     },
-    frontendLog: createLog({ service: "frontend", dir: logDir }),
+    log: createLogs({ dir: logDir }),
   });
   running.push(s);
   return s;

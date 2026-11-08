@@ -222,6 +222,25 @@ describe("durability and scale-out", () => {
   });
 });
 
+describe("health", () => {
+  it("is healthy while it can reach Postgres, and says so when it cannot", async () => {
+    const own = await freshDatabase();
+    const s = await startServer({ databaseUrl: own.url, auth: allowAll });
+    try {
+      const ok = await fetch(`${s.url}/healthz`);
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ status: "ok" });
+
+      await own.close();
+      const down = await fetch(`${s.url}/healthz`);
+      expect(down.status).toBe(503);
+      expect(await down.json()).toMatchObject({ status: "unavailable" });
+    } finally {
+      await s.close().catch(() => {});
+    }
+  });
+});
+
 describe("presence", () => {
   it("clears a working copy whose stream closes and does not come back", async () => {
     const s = await server({ graceMs: 300 });

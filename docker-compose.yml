@@ -1,0 +1,56 @@
+# Highground and its Postgres (plan 06).
+#
+#   docker compose up postgres     the database alone, for running the server from source
+#   docker compose up --build      the whole instance on http://localhost:8080
+#
+# Settings come from the environment. With no GitHub App, set HIGHGROUND_ALLOW_ALL=1 to
+# run open to anyone who can reach the port.
+name: highground
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: highground
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-highground}
+      POSTGRES_DB: highground
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username=highground", "--dbname=highground"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  highground:
+    image: ghcr.io/cainus/highground:${HIGHGROUND_TAG:-latest}
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${HIGHGROUND_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://highground:${POSTGRES_PASSWORD:-highground}@postgres:5432/highground
+      HIGHGROUND_ALLOW_ALL: ${HIGHGROUND_ALLOW_ALL:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-}
+      GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
+      SESSION_KEY: ${SESSION_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres:
+  data:

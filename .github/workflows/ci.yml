@@ -57,3 +57,34 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm bench
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      COMPOSE_PROJECT_NAME: hgsmoke
+      HIGHGROUND_ALLOW_ALL: "1"
+      HIGHGROUND_TAG: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      # Builds the image and runs it as an operator would, with compose and Postgres.
+      - run: docker compose up --detach --build --wait
+      - run: node scripts/smoke.ts http://localhost:8080
+      - if: failure()
+        run: docker compose logs
+      - run: docker compose down --volumes
+      # Only an image that passed the smoke test is published.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        name: Publish ghcr.io/cainus/highground
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker tag ghcr.io/cainus/highground:ci ghcr.io/cainus/highground:latest
+          docker tag ghcr.io/cainus/highground:ci ghcr.io/cainus/highground:${{ github.sha }}
+          docker push ghcr.io/cainus/highground:latest
+          docker push ghcr.io/cainus/highground:${{ github.sha }}

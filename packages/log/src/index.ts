@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -25,27 +25,81 @@ export function cliLogDir(): string {
 
 const fileFor = (time: number) => `highground-${new Date(time).toISOString().slice(0, 10)}.jsonl`;
 
+/** Where pino writes: anything with a synchronous `write`. */
+export interface LineSink {
+  write(line: string): unknown;
+}
+
 /**
- * A pino logger writing one JSON object per line — `time`, `level`, `service`, `msg`
- * and the logged fields — to `highground-YYYY-MM-DD.jsonl` in `dir`, by UTC day. Writes
- * are synchronous appends, so nothing is lost when a process exits, and nothing ever
- * goes to stdout, which an MCP server reserves for protocol messages.
+ * The day's log file, held open and written with one synchronous `write` per line, so
+ * nothing is lost when the process exits. It moves to the next file at UTC midnight,
+ * and starts the file again if it was deleted or replaced while open.
  */
-export function createLog({ service, dir, now = Date.now }: LogOptions): Log {
+function dailyFile(dir: string, now: () => number): LineSink {
   mkdirSync(dir, { recursive: true });
-  const destination = {
+  let open: { name: string; fd: number; ino: number } | undefined;
+  const reopen = (name: string) => {
+    if (open) closeSync(open.fd);
+    const fd = openSync(join(dir, name), "a");
+    open = { name, fd, ino: fstatSync(fd).ino };
+    return open;
+  };
+  return {
     write(line: string) {
-      appendFileSync(join(dir, fileFor(now())), line);
+      const name = fileFor(now());
+      let file = open?.name === name ? open : reopen(name);
+      if (statSync(join(dir, name), { throwIfNoEntry: false })?.ino !== file.ino) {
+        file = reopen(name);
+      }
+      writeSync(file.fd, line);
     },
   };
+}
+
+function logger(service: Service, now: () => number, sink: LineSink): Log {
   return pino(
     {
       base: { service },
       timestamp: () => `,"time":"${new Date(now()).toISOString()}"`,
       formatters: { level: (label) => ({ level: label }) },
     },
-    destination,
+    sink,
   );
+}
+
+/**
+ * A pino logger writing one JSON object per line — `time`, `level`, `service`, `msg`
+ * and the logged fields — to `highground-YYYY-MM-DD.jsonl` in `dir`, by UTC day. Nothing
+ * ever goes to stdout, which an MCP server reserves for protocol messages.
+ */
+export function createLog({ service, dir, now = Date.now }: LogOptions): Log {
+  return logger(service, now, dailyFile(dir, now));
+}
+
+export interface ServerLogOptions {
+  /** The directory for the daily files; none when unset. */
+  dir?: string;
+  /** Also write every line here: `process.stdout` in a container. */
+  echo?: LineSink;
+  now?: () => number;
+}
+
+/** The server's two loggers, `backend` and `frontend`, sharing one daily file (PRD §9). */
+export function createLogs({ dir, echo, now = Date.now }: ServerLogOptions): {
+  backend: Log;
+  frontend: Log;
+} {
+  const sinks = [...(dir === undefined ? [] : [dailyFile(dir, now)]), ...(echo ? [echo] : [])];
+  if (sinks.length === 0) throw new Error("createLogs needs a directory or somewhere to echo");
+  const sink: LineSink =
+    sinks.length === 1
+      ? sinks[0]!
+      : {
+          write(line: string) {
+            for (const each of sinks) each.write(line);
+          },
+        };
+  return { backend: logger("backend", now, sink), frontend: logger("frontend", now, sink) };
 }
 
 /** Deletes log files whose day ended more than 72 h before `now`; returns their names. */

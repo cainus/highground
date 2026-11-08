@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.github
+coverage
+logs
+test-results
+playwright-report
+.highground
+docs
+e2e
+**/test
+**/bench
+**/e2e

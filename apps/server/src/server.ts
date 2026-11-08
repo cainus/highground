@@ -11,7 +11,7 @@ import { HeartbeatLog } from "./db/heartbeat-log.ts";
 import { migrate } from "./db/migrate.ts";
 import { maintainPartitions } from "./db/partitions.ts";
 import { GitHubApp, NotInstalledError, type GitHubAppConfig } from "./github.ts";
-import type { Log } from "@highground/log";
+import { createLogs, type Log } from "@highground/log";
 import { createHash } from "node:crypto";
 import { and, gt, inArray, isNotNull } from "drizzle-orm";
 import { Hub } from "./hub.ts";
@@ -33,15 +33,15 @@ export interface ServerOptions {
   graceMs?: number;
   /** The least time between two radar updates on a stream; 250 ms by default. */
   radarMs?: number;
-  /** Where the dashboard's own log lines go (PRD §9); stderr, as JSON lines, when unset. */
-  frontendLog?: Log;
+  /** The server's and the dashboard's loggers (PRD §9); JSON lines on stderr when unset. */
+  log?: { backend: Log; frontend: Log };
+  /** Requests slower than this are logged at `warn`; 1 s by default. */
+  slowMs?: number;
   /** Web Push for HIGH collisions; needs web sign-in. */
   push?: VapidConfig;
   /** How often the history recorder checks its lease; 5 s by default. */
   recorderMs?: number;
   sweepMs?: number;
-  /** Called when a heartbeat log write fails; it is retried regardless. */
-  onLogError?: (error: unknown) => void;
   /** The instance's GitHub App: mirror credentials, PR links, and sign-in. */
   github?: GitHubAppConfig;
   /** Mirror repositories for pushed work, translation and speculative merges. */
@@ -63,8 +63,6 @@ export interface ServerOptions {
   webDir?: string;
   /** The dashboard's public origin, for OAuth redirects; the request's own when unset. */
   publicUrl?: string;
-  /** Called when mirroring a repository fails; it is retried on the next round. */
-  onMirrorError?: (repo: string, error: unknown) => void;
 }
 
 export interface RunningServer {
@@ -83,7 +81,16 @@ interface Context {
   authorization?: string | undefined;
   /** The request's `Cookie` header. */
   cookie?: string | undefined;
+  /** The request's id, on every line it logs. */
+  requestId?: string;
 }
+
+/** A client's `x-request-id` is kept when it is a short token; anything else gets a new one. */
+const REQUEST_ID = /^[\w.:-]{1,128}$/;
+
+/** An error as one log field: its stack when it has one. */
+const stackOf = (error: unknown) =>
+  error instanceof Error ? (error.stack ?? error.message) : String(error);
 
 interface Deps {
   hub: Hub;
@@ -317,6 +324,8 @@ function routerFor(deps: Deps) {
 }
 
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
+  const logs = options.log ?? createLogs({ echo: process.stderr });
+  const log = logs.backend;
   const github = options.github ? new GitHubApp(options.github) : undefined;
   const auth = options.auth ?? (github && new GitHubAuthorizer(github));
   if (!auth) throw new Error("configure a GitHub App, or pass `auth` (allowAll to run open)");
@@ -328,31 +337,11 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     void sessions?.prune().catch(() => {});
   }, HOUR);
 
-  const log = new HeartbeatLog(sql, randomUUID(), {
-    onError:
-      options.onLogError ??
-      ((error) =>
-        console.error(
-          JSON.stringify({
-            level: "error",
-            service: "backend",
-            msg: "heartbeat log write failed",
-            error: String(error),
-          }),
-        )),
+  const heartbeats = new HeartbeatLog(sql, randomUUID(), {
+    onError: (error) => log.error({ error: stackOf(error) }, "heartbeat log write failed"),
   });
-  const logMirrorError =
-    options.onMirrorError ??
-    ((repo: string, error: unknown) =>
-      console.error(
-        JSON.stringify({
-          level: "warn",
-          service: "backend",
-          msg: "mirror failed",
-          repo,
-          error: String(error),
-        }),
-      ));
+  const logMirrorError = (repo: string, error: unknown) =>
+    log.warn({ repo, error: stackOf(error) }, "mirror failed");
   const remote: Remote | undefined =
     options.mirror?.remote ??
     (github && { url: (repo) => github.remoteUrl(repo), config: (repo) => github.gitConfig(repo) });
@@ -362,7 +351,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       ? new Mirror({ dir: options.mirror.dir, remote, onError: logMirrorError })
       : undefined;
 
-  const hub = new Hub(log, {
+  const hub = new Hub(heartbeats, {
     graceMs: options.graceMs ?? 10_000,
     sweepMs: options.sweepMs ?? 5_000,
     ...(options.radarMs ? { radarMs: options.radarMs } : {}),
@@ -403,15 +392,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           vapid: options.push,
           sessions,
           auth,
-          onError: (error) =>
-            console.error(
-              JSON.stringify({
-                level: "warn",
-                service: "backend",
-                msg: "push failed",
-                error: String(error),
-              }),
-            ),
+          onError: (error) => log.warn({ error: stackOf(error) }, "push failed"),
         })
       : undefined;
   const recorder = new Recorder({
@@ -419,15 +400,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     hub,
     ...(push ? { onHigh: (episode) => push.notify(episode) } : {}),
     tickMs: options.recorderMs ?? 5_000,
-    onError: (error) =>
-      console.error(
-        JSON.stringify({
-          level: "error",
-          service: "backend",
-          msg: "collision history write failed",
-          error: String(error),
-        }),
-      ),
+    onError: (error) => log.error({ error: stackOf(error) }, "collision history write failed"),
   });
   recorder.start();
 
@@ -442,15 +415,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     mirror: mirrorService,
     sql,
     push,
-    frontendLog:
-      options.frontendLog ??
-      (Object.fromEntries(
-        (["debug", "info", "warn", "error"] as const).map((level) => [
-          level,
-          (fields: object, msg: string) =>
-            console.error(JSON.stringify({ level, service: "frontend", msg, ...fields })),
-        ]),
-      ) as unknown as Deps["frontendLog"]),
+    frontendLog: logs.frontend,
     track: (repo) => {
       if (known.has(repo)) return;
       known.add(repo);
@@ -463,22 +428,50 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       (await db.select({ repo: repos.repo }).from(repos).orderBy(repos.repo)).map((r) => r.repo),
   });
   // Failures the caller is meant to see are ORPCErrors under 500; anything else is a bug.
-  const logFailure = (error: unknown) => {
+  const logFailure = (error: unknown, { context }: { context: Context }) => {
     if (error instanceof ORPCError && error.status < 500) return;
     const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
-    console.error(
-      JSON.stringify({
-        level: "error",
-        service: "backend",
-        msg: "request failed",
-        error: cause instanceof Error ? cause.stack : String(cause),
-      }),
-    );
+    log.error({ requestId: context.requestId, error: stackOf(cause) }, "request failed");
   };
   const openapi = new OpenAPIHandler(router, { interceptors: [onError(logFailure)] });
   const rpc = new RPCHandler(router, { interceptors: [onError(logFailure)] });
-  // Open SSE streams would otherwise hold `close()` until every client disconnects.
-  const app = Fastify({ forceCloseConnections: true });
+  const app = Fastify({
+    // Open SSE streams would otherwise hold `close()` until every client disconnects.
+    forceCloseConnections: true,
+    requestIdHeader: false,
+    genReqId: (request) => {
+      const given = request.headers["x-request-id"];
+      return typeof given === "string" && REQUEST_ID.test(given) ? given : randomUUID();
+    },
+  });
+  const slowMs = options.slowMs ?? 1_000;
+  app.addHook("onRequest", async (request, reply) => {
+    void reply.header("x-request-id", request.id);
+  });
+  // One line per slow request, none per ordinary one: logging stays off the heartbeat path.
+  app.addHook("onResponse", async (request, reply) => {
+    const ms = reply.elapsedTime;
+    if (ms < slowMs) return;
+    if (String(reply.getHeader("content-type") ?? "").startsWith("text/event-stream")) return;
+    log.warn(
+      {
+        requestId: request.id,
+        method: request.method,
+        url: request.url,
+        status: reply.statusCode,
+        ms: Math.round(ms),
+      },
+      "slow request",
+    );
+  });
+  const contextOf = (request: {
+    headers: Record<string, string | string[] | undefined>;
+    id: string;
+  }) => ({
+    authorization: request.headers.authorization as string | undefined,
+    cookie: request.headers.cookie as string | undefined,
+    requestId: request.id,
+  });
   if (github && sessions) registerWebAuth(app, { github, sessions, publicUrl: options.publicUrl });
   // The log endpoint's own body limit (PRD §9); a larger batch never reaches the handler.
   for (const [path, handler, prefix] of [
@@ -488,23 +481,38 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     app.post(path, { bodyLimit: LOG_BATCH_BYTES }, async (request, reply) => {
       await handler.handle(request, reply, {
         prefix,
-        context: { authorization: request.headers.authorization, cookie: request.headers.cookie },
+        context: contextOf(request),
       });
     });
   }
   app.all("/api/v1/*", async (request, reply) => {
     const { matched } = await openapi.handle(request, reply, {
       prefix: "/api/v1",
-      context: { authorization: request.headers.authorization, cookie: request.headers.cookie },
+      context: contextOf(request),
     });
     if (!matched) await reply.code(404).send({ error: "not found" });
   });
   app.all("/rpc/*", async (request, reply) => {
     const { matched } = await rpc.handle(request, reply, {
       prefix: "/rpc",
-      context: { authorization: request.headers.authorization, cookie: request.headers.cookie },
+      context: contextOf(request),
     });
     if (!matched) await reply.code(404).send({ error: "not found" });
+  });
+
+  // For orchestrators: up means able to serve, which needs Postgres.
+  app.get("/healthz", async (_request, reply) => {
+    try {
+      await Promise.race([
+        sql`SELECT 1`,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("timed out after 2 s")), 2_000).unref(),
+        ),
+      ]);
+      return { status: "ok" };
+    } catch (error) {
+      return reply.code(503).send({ status: "unavailable", reason: String(error) });
+    }
   });
 
   if (options.webDir) {
@@ -515,6 +523,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   }
 
   const address = await app.listen({ port: options.port ?? 0, host: options.host ?? "127.0.0.1" });
+  log.info({ url: address }, "listening");
   return {
     url: address,
     hub,

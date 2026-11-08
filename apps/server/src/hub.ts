@@ -11,6 +11,9 @@ import { CollisionTracker } from "./collision-tracker.ts";
 import type { HeartbeatLog } from "./db/heartbeat-log.ts";
 import { LiveIndex, type JudgedPath, type Oracle, type PathRef } from "./live-index.ts";
 
+/** What the hub needs of the heartbeat log: `HeartbeatLog` in production. */
+export type HeartbeatStore = Pick<HeartbeatLog, "append" | "since" | "listen" | "stop">;
+
 /** The longest TTL a heartbeat may have; rebuilding replays this much of the log. */
 const MAX_TTL_MS = 300_000;
 
@@ -75,10 +78,10 @@ export class Hub {
   #stopped = false;
   #unlisten: (() => Promise<void>) | undefined;
 
-  readonly #log: HeartbeatLog;
+  readonly #log: HeartbeatStore;
   readonly #options: HubOptions;
 
-  constructor(log: HeartbeatLog, options: HubOptions) {
+  constructor(log: HeartbeatStore, options: HubOptions) {
     this.#log = log;
     this.#options = options;
     this.#now = options.now ?? Date.now;

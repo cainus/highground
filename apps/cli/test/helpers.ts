@@ -42,7 +42,11 @@ export interface TestServer {
 }
 
 /** A real Highground server on a fresh database; with `mirrorOf`, it mirrors that origin. */
-export async function testServer(port = 0, mirrorOf?: string): Promise<TestServer> {
+export async function testServer(
+  port = 0,
+  mirrorOf?: string,
+  timing: { graceMs?: number; sweepMs?: number } = {},
+): Promise<TestServer> {
   const db = await freshDatabase();
   const server = await startServer({
     databaseUrl: db.url,
@@ -50,6 +54,7 @@ export async function testServer(port = 0, mirrorOf?: string): Promise<TestServe
     auth: allowAll,
     graceMs: 200,
     sweepMs: 100,
+    ...timing,
     ...(mirrorOf
       ? {
           mirror: {

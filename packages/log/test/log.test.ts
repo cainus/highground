@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createLog, pruneLogs } from "../src/index.ts";
+import { createLog, createLogs, pruneLogs } from "../src/index.ts";
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -60,6 +60,51 @@ describe("createLog", () => {
     const log = createLog({ service: "mcp", dir, now: () => 0 });
     log.warn("x");
     expect(readdirSync(dir)).toEqual(["highground-1970-01-01.jsonl"]);
+  });
+});
+
+describe("createLogs", () => {
+  it("writes the backend's and the frontend's lines to one daily file, in order", () => {
+    const dir = scratch();
+    const { backend, frontend } = createLogs({
+      dir,
+      now: () => Date.parse("2026-11-08T10:00:00Z"),
+    });
+    backend.info({ requestId: "r1" }, "started");
+    frontend.error({ login: "alice" }, "boom");
+    backend.warn("slow");
+
+    expect(read(dir, "highground-2026-11-08.jsonl")).toEqual([
+      expect.objectContaining({ service: "backend", msg: "started", requestId: "r1" }),
+      expect.objectContaining({ service: "frontend", msg: "boom", login: "alice", level: "error" }),
+      expect.objectContaining({ service: "backend", msg: "slow", level: "warn" }),
+    ]);
+  });
+
+  it("copies every line to stdout when asked, as a container's log driver reads it", () => {
+    const dir = scratch();
+    const out: string[] = [];
+    const { backend, frontend } = createLogs({
+      dir,
+      now: () => 0,
+      echo: { write: (line: string) => out.push(line) },
+    });
+    backend.info("a");
+    frontend.info("b");
+
+    expect(out.map((line) => (JSON.parse(line) as { msg: string }).msg)).toEqual(["a", "b"]);
+    expect(read(dir, "highground-1970-01-01.jsonl")).toHaveLength(2);
+  });
+
+  it("keeps writing when the day's file was deleted under it, starting a new one", () => {
+    const dir = scratch();
+    const { backend } = createLogs({ dir, now: () => 0 });
+    backend.info("first");
+    rmSync(join(dir, "highground-1970-01-01.jsonl"));
+    backend.info("second");
+    expect(read(dir, "highground-1970-01-01.jsonl")).toEqual([
+      expect.objectContaining({ msg: "second" }),
+    ]);
   });
 });
 
