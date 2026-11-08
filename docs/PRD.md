@@ -176,6 +176,7 @@ Frontend log batches (§9).
 One CLI, `highground`:
 
 - **`login`** — GitHub device flow; stores the Highground token.
+- **`watch [dir]`** — registers a working copy in `~/.config/highground/config.json`; a running daemon starts reporting it at once.
 - **`daemon`** — runs wherever git works for the working copies it watches (inside a container or on a host). Watches registered working copies; on save, debounced 500 ms, computes base-coordinate ranges and sends a complete heartbeat; re-sends its complete snapshot every 20 s as keepalive. Scans local branches for parked work. Runs speculative merges for pushed refs the server announces. Never fetches the remote on its own schedule. Writes `.highground/id` and `.highground/daemon.json` (addresses + per-daemon secret) into each working copy and adds `.highground/` to `.git/info/exclude`.
 - **`mcp`** — stdio MCP server, one per agent. Tools:
   - `broadcast_edit_intent(path, ranges[], intent, ttl_seconds)` — ranges in working-copy coordinates; sent as a partial heartbeat for the agent actor; returns current collisions in working-copy coordinates.
@@ -223,7 +224,8 @@ pnpm monorepo:
 
 ```
 packages/core   Zod schemas, interval math, hunk mapping, base translation — pure
-packages/git    merge-base, diff -U0, merge-tree, stash-create snapshots, working-copy identity
+packages/git    merge-base, diff -U0, merge-tree, index-copy snapshots, working-copy identity
+packages/log    pino to daily JSON-lines files, pruned after 72 h
 apps/server     Fastify + oRPC, live index, Postgres, mirror, GitHub App, Web Push
 apps/web        dashboard
 apps/cli        highground login | daemon | mcp

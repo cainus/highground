@@ -1,0 +1,11 @@
+{
+  "name": "@highground/log",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "pino": "^10.4.0"
+  }
+}

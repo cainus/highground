@@ -1,10 +1,16 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { parseDiff, reportsFromDiff, type FileReport } from "@highground/core";
+import {
+  parseDiff,
+  repoFromRemote,
+  reportsFromDiff,
+  type FileReport,
+  type Hunk,
+} from "@highground/core";
 
 /** SHA-256 of a change's new content. Hashed here so code never leaves the machine. */
 function digestLines(lines: string[]): string {
@@ -127,4 +133,179 @@ export async function mergeTree(dir: string, ours: string, theirs: string): Prom
   );
   const [, ...paths] = result.stdout.split("\0").filter(Boolean);
   return { clean: result.code === 0, conflicts: [...new Set(paths)] };
+}
+
+export type RepoStateReason =
+  | "not-a-repository"
+  | "no-remote"
+  | "unrecognised-remote"
+  | "no-default-branch";
+
+/** Why a directory's repository state could not be read; `reason` is stable for callers. */
+export class RepoStateError extends Error {
+  readonly reason: RepoStateReason;
+  constructor(reason: RepoStateReason, message: string) {
+    super(message);
+    this.name = "RepoStateError";
+    this.reason = reason;
+  }
+}
+
+export interface RepoState {
+  /** The working copy's top-level directory. */
+  root: string;
+  /** `host/owner/name`, from `origin`. */
+  repo: string;
+  /** The remote-tracking ref of the default branch, e.g. `origin/main`. */
+  defaultRef: string;
+  /** The base commit (ADR 0001). */
+  base: string;
+  /** The checked-out branch, or `HEAD` when detached. */
+  branch: string;
+  author: string;
+}
+
+async function optional(dir: string, args: string[]): Promise<string | null> {
+  const result = await git(dir, args, { okCodes: [1, 128] });
+  return result.code === 0 ? result.stdout.trim() : null;
+}
+
+/** The default branch's remote-tracking ref: `origin/HEAD`'s target, else `origin/main` or `origin/master`. */
+async function defaultRefOf(dir: string): Promise<string | null> {
+  const head = await optional(dir, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
+  if (head) return head.replace(/^refs\/remotes\//, "");
+  for (const ref of ["origin/main", "origin/master"]) {
+    if (await optional(dir, ["rev-parse", "-q", "--verify", `refs/remotes/${ref}`])) return ref;
+  }
+  return null;
+}
+
+/** Everything a heartbeat needs to say about where a working copy stands. */
+export async function repoState(dir: string): Promise<RepoState> {
+  const root = await git(dir, ["rev-parse", "--show-toplevel"]).then(
+    (r) => r.stdout.trim(),
+    (error: unknown) => {
+      throw new RepoStateError(
+        "not-a-repository",
+        `${dir} is not in a git working copy: ${String(error)}`,
+      );
+    },
+  );
+  const url = await optional(root, ["config", "--get", "remote.origin.url"]);
+  if (!url) throw new RepoStateError("no-remote", `${root} has no origin remote`);
+  const repo = repoFromRemote(url);
+  if (!repo)
+    throw new RepoStateError("unrecognised-remote", `cannot name a repository from ${url}`);
+  const defaultRef = await defaultRefOf(root);
+  if (!defaultRef) {
+    throw new RepoStateError(
+      "no-default-branch",
+      `${root} has no origin/HEAD, origin/main or origin/master`,
+    );
+  }
+  const [base, branch, author] = await Promise.all([
+    mergeBase(root, defaultRef),
+    optional(root, ["symbolic-ref", "--short", "-q", "HEAD"]),
+    optional(root, ["config", "user.email"]),
+  ]);
+  return { root, repo, defaultRef, base, branch: branch || "HEAD", author: author || "unknown" };
+}
+
+/**
+ * One file's hunks from the base to the working tree, uncommitted edits included, for
+ * translating between working-copy and base coordinates. Null when the file is not in
+ * the base or is binary: its changes are the whole file.
+ */
+export async function fileHunks(dir: string, base: string, path: string): Promise<Hunk[] | null> {
+  if ((await optional(dir, ["cat-file", "-e", `${base}:${path}`])) === null) return null;
+  const diff = await git(dir, [
+    "diff",
+    "-U0",
+    "--histogram",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    base,
+    "--",
+    path,
+  ]);
+  const [file] = parseDiff(diff.stdout);
+  if (!file) return [];
+  return file.binary ? null : file.hunks;
+}
+
+const IDENTITY_DIR = ".highground";
+const EXCLUDE_LINE = "/.highground/";
+
+/**
+ * The working copy's id (ADR 0005), creating `.highground/id` when missing and keeping
+ * `.highground/` out of git through the repository's shared `info/exclude`. Safe when
+ * several processes create it at once: the first write wins and the rest read it.
+ */
+export async function ensureIdentity(root: string): Promise<string> {
+  await mkdir(join(root, IDENTITY_DIR), { recursive: true });
+  const file = join(root, IDENTITY_DIR, "id");
+  try {
+    await writeFile(file, `${randomUUID()}\n`, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const exclude = resolve(
+    root,
+    (await git(root, ["rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
+  );
+  await mkdir(dirname(exclude), { recursive: true });
+  const current = await readFile(exclude, "utf8").catch(() => "");
+  if (!current.split("\n").includes(EXCLUDE_LINE)) {
+    await appendFile(exclude, `${current && !current.endsWith("\n") ? "\n" : ""}${EXCLUDE_LINE}\n`);
+  }
+  return await readId(file);
+}
+
+/** Reads an id file, waiting out a concurrent creator that has opened it but not yet written. */
+async function readId(file: string): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const id = (await readFile(file, "utf8")).trim();
+    if (id || attempt >= 50) return id;
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+/**
+ * The working copy containing `start` and its id, found by walking up to `.highground/id`
+ * without running git, so it works where git cannot, such as a container whose `.git`
+ * file points at a host path.
+ */
+export async function findIdentity(start: string): Promise<{ root: string; id: string } | null> {
+  let dir = resolve(start);
+  for (;;) {
+    const id = await readFile(join(dir, IDENTITY_DIR, "id"), "utf8").then(
+      (text) => text.trim(),
+      () => "",
+    );
+    if (id) return { root: dir, id };
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * The directories to watch for changes to a working copy: every directory holding a
+ * tracked or untracked, non-ignored file, so `node_modules` and build output cost no
+ * watches, plus the git directory, where HEAD and the index change on commit and checkout.
+ */
+export async function watchTargets(root: string): Promise<string[]> {
+  const [files, gitDir] = await Promise.all([
+    git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]),
+    git(root, ["rev-parse", "--absolute-git-dir"]),
+  ]);
+  const dirs = new Set([root, gitDir.stdout.trim()]);
+  for (const path of files.stdout.split("\0").filter(Boolean)) {
+    for (let d = dirname(path); d !== "."; d = dirname(d)) {
+      if (dirs.has(join(root, d))) break;
+      dirs.add(join(root, d));
+    }
+  }
+  return [...dirs];
 }
