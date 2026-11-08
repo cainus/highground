@@ -235,7 +235,7 @@ Tooling: TypeScript, Vitest, Oxfmt + Oxlint, Drizzle. Shipped as one Docker imag
 
 1. **Agreement with git.** A fast-check differential test generates random base files and pairs of edits, runs a real `git merge`, and asserts DIRECT_OVERLAP ⇔ CONFLICT over thousands of cases.
 2. **Interval math properties.** Symmetry, translate-and-back identity, idempotent complete heartbeats; 100 % branch coverage of `packages/core` enforced in Vitest.
-3. **Latency.** An autocannon benchmark in CI, on Linux, at 100 working copies and 300 actors keeps p99 under 10 ms for queries and heartbeats. A developer laptop cannot settle this: a do-nothing HTTP server measured p99 9–16 ms there.
+3. **Latency.** A benchmark in CI, on Linux, at 100 working copies and 300 actors with requests arriving evenly keeps p99 under 10 ms for queries and heartbeats, as the client sees them. It prints a do-nothing server under the same load and the server's own timing beside that, so a miss can be placed.
 4. **Never blocks.** No endpoint takes a lock a client waits on; every client failure path fails open and is logged.
 5. **Stale data cleared.** A killed client's warnings disappear within `ttl_seconds + 5 s`, and within 10 s when it held an SSE stream — tested with fake timers and with one real-time integration test.
 6. **Restart safety.** After a server restart, every unexpired range that reached the log is warned on again without any client re-sending; a crash loses at most the last flush, which clients restore with their next complete snapshot.
