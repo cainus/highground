@@ -41,8 +41,16 @@ An actor's current statement of the ranges it is changing in a file; it supersed
 _Avoid_: ping, update, edit event
 
 **Direct overlap**:
-Two ranges that share a line or touch with no unchanged line between them; git cannot merge them cleanly.
+Two ranges that share a line or touch with no unchanged line between them, other than a duplicate change; git cannot merge them cleanly.
 _Avoid_: collision (as a type), conflict
+
+**Duplicate change**:
+The same base lines replaced with the same content by two actors; git merges it cleanly, but the work was done twice.
+_Avoid_: identical overlap, same edit
+
+**Insertion point**:
+A position between two base lines where new lines were added, covering no base line itself.
+_Avoid_: zero-length range, empty hunk
 
 **Proximity alert**:
 Two ranges separated by at least one and at most fifteen unchanged lines; they merge cleanly but may break each other.

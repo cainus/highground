@@ -42,23 +42,25 @@ Vocabulary is defined in [`CONTEXT.md`](../CONTEXT.md); decisions that are hard 
 
 ### 3.1 Coordinates
 
-All ranges on the wire are closed intervals `[start, end]`, `1 <= start <= end`, in **base coordinates**: positions in the file at the **base commit** (merge-base of the branch with the repository's default branch). Clients translate from and to **working-copy coordinates**; agents and humans never see base coordinates. See ADR 0001.
+All ranges on the wire are closed intervals `[start, end]` with `1 <= start` and `end >= start - 1`, in **base coordinates**. `end = start - 1` is an **insertion point**: it covers no base line and sits between lines `end` and `start` (`[1, 0]` is the top of the file). Base coordinates are positions in the file at the **base commit** (merge-base of the branch with the repository's default branch). Clients translate from and to **working-copy coordinates**; agents and humans never see base coordinates. See ADR 0001.
 
 ### 3.2 Hunk mapping
 
-From `git diff -U0 -M <base>`:
+From `git diff -U0 -M --histogram <base>` (histogram matches merge-ort), plus `git ls-files --others --exclude-standard` for untracked files:
 
-| Change | Base-coordinate range |
-|---|---|
-| Modification `-a,b +c,d` | `[a, a+b-1]` |
-| Deletion `-a,b +c,0` | `[a, a+b-1]` |
-| Pure insertion after base line `a` (`-a,0`) | `[a, a+1]`; at `a = 0`, `[1, 1]` |
-| New file | whole file |
-| Deleted file | whole file |
-| Rename | ranges under the base path; new path reported as whole file |
-| Binary file | whole file |
+| Change                                      | Base-coordinate range                                       |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| Modification `-a,b +c,d`                    | `[a, a+b-1]`                                                |
+| Deletion `-a,b +c,0`                        | `[a, a+b-1]`                                                |
+| Pure insertion after base line `a` (`-a,0`) | the insertion point `[a+1, a]`                              |
+| New or untracked file                       | whole file                                                  |
+| Deleted file                                | whole file                                                  |
+| Rename                                      | ranges under the base path; new path reported as whole file |
+| Binary file                                 | whole file                                                  |
 
-A whole-file range collides as HIGH with any range in the same path.
+A whole-file change collides as HIGH with anything in the same path.
+
+Each range from a diff carries a **digest**: SHA-256 of the lines that replace it (empty for a deletion), computed on the client so no code leaves the machine. Ranges with no diff behind them, such as an agent's announced intent, carry none.
 
 ### 3.3 Identity
 
@@ -72,14 +74,23 @@ A whole-file range collides as HIGH with any range in the same path.
 
 Given a candidate range `[s1, e1]` and a peer range `[s2, e2]` in the same file, after translation to a common base:
 
-1. **DIRECT_OVERLAP (HIGH)** — `max(s1, s2) <= min(e1, e2) + 1`. Shared or touching lines; git cannot merge these cleanly (verified against real merges).
-2. **PROXIMITY_ALERT (MEDIUM)** — not a direct overlap, and the number of unchanged lines between them is at most `proximity_lines` (default 15, configurable per repo).
-3. **Suppression** — ranges from the same working copy never warn against each other.
-4. **Dormancy** — parked or pushed work with no commit for 7 days drops one severity (HIGH→MEDIUM, MEDIUM→LOW).
-5. **Confidence**
-   - `approximate: true` when the two bases differ and the mirror cannot yet translate between them.
-   - `confirmed: true | false` when a speculative merge (ADR 0003) has run: true if `git merge-tree` reports a conflict, false if it merges cleanly (the warning is then downgraded to MEDIUM). Absent when no speculative merge was possible (live ↔ live).
-   - Speculative merges run pushed ↔ pushed on the server and live/parked ↔ pushed in the daemon, filtered to branches touching the same files and debounced. Proximity alerts are never confirmed.
+The unchanged lines between two ranges are `gap = max(s1, s2) - min(e1, e2) - 1`.
+
+1. **DUPLICATE_CHANGE (MEDIUM)** — both ranges are identical and carry the same digest: the same base lines replaced by the same content. Git merges this cleanly, but two actors did the same work.
+2. **DIRECT_OVERLAP (HIGH)** — otherwise, `gap <= 0`: shared or touching lines, including two insertions at the same point. Git cannot merge these cleanly.
+3. **PROXIMITY_ALERT (MEDIUM)** — `1 <= gap <= proximity_lines` (default 15, configurable per repo).
+
+Between two files, the most severe pair wins (DIRECT_OVERLAP > DUPLICATE_CHANGE > PROXIMITY_ALERT). These rules are checked against real `git merge` by the oracle test (§12).
+
+Further rules:
+
+- **Suppression** — ranges from the same working copy never warn against each other.
+- **Dormancy** — parked or pushed work with no commit for 7 days drops one severity (HIGH→MEDIUM, MEDIUM→LOW).
+- **Translation** — between differing bases, a range is mapped through `git diff -U0 baseA baseB`: lines unchanged between the bases map exactly; a range that meets a change between the bases is widened over what replaced it and the warning is marked approximate.
+- **Confidence**
+  - `approximate: true` when the two bases differ and either the mirror cannot yet translate between them or the range met a change between the bases.
+  - `confirmed: true | false` when a speculative merge (ADR 0003) has run: true if `git merge-tree` reports a conflict, false if it merges cleanly (the warning is then downgraded to MEDIUM). Absent when no speculative merge was possible (live ↔ live).
+  - Speculative merges run pushed ↔ pushed on the server and live/parked ↔ pushed in the daemon, filtered to branches touching the same files and debounced. Proximity alerts are never confirmed.
 
 ## 5. API
 
@@ -97,13 +108,20 @@ oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` w
   "base_sha": "a1b2c3…",
   "scope": "complete",
   "files": [
-    { "path": "src/auth/jwt.py", "ranges": [[45, 62], [110, 115]], "intent": "converting verify to async" }
+    {
+      "path": "src/auth/jwt.py",
+      "changes": [
+        { "range": [45, 62], "digest": "9f2c…" },
+        { "range": [110, 115], "digest": null }
+      ],
+      "intent": "converting verify to async"
+    }
   ],
   "ttl_seconds": 60
 }
 ```
 
-- A heartbeat replaces the previous ranges for **(repo, working copy, actor, file)**. Empty `ranges` clears a file.
+- A heartbeat replaces the previous changes for **(repo, working copy, actor, file)**. Empty `changes` clears a file.
 - `scope: "complete"` — the batch is the actor's entire state; files it omits are cleared. `scope: "partial"` — only listed files are replaced.
 - `ttl_seconds` 5–300, default 60. Limits: `intent` ≤ 280 chars, ≤ 50 ranges per file, ≤ 200 files per heartbeat.
 - The heartbeat is appended to the log before it is acknowledged. The response contains the current warnings for the submitted ranges.

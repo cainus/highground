@@ -1,0 +1,11 @@
+{
+  "name": "@highground/git",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@highground/core": "workspace:*"
+  }
+}
