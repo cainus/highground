@@ -56,6 +56,8 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Shared runners differ; the CPU explains a slow run.
+      - run: nproc && lscpu | grep -E 'Model name|MHz' || true
       - run: pnpm bench
 
   image:

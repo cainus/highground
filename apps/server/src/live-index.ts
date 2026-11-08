@@ -46,6 +46,8 @@ interface Side {
 export interface Entry extends Side {
   repo: string;
   actor: Actor;
+  /** `peerKey(workingCopyId, actor)`, computed once per heartbeat. */
+  peerId: string;
   author: string;
   branch: string;
   path: string;
@@ -57,7 +59,7 @@ export interface Entry extends Side {
 }
 
 /** How one side sees a collision with another. */
-interface Verdict {
+export interface Verdict {
   pair: Pair;
   severity: Warning["severity"];
   approximate: boolean;
@@ -96,8 +98,8 @@ const SEVERITY: Record<CollisionType, Warning["severity"]> = {
   DUPLICATE_CHANGE: "MEDIUM",
   PROXIMITY_ALERT: "MEDIUM",
 };
-const SEVERITY_RANK: Record<Warning["severity"], number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
-const RANK: Record<CollisionType, number> = {
+export const SEVERITY_RANK: Record<Warning["severity"], number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+export const RANK: Record<CollisionType, number> = {
   DIRECT_OVERLAP: 3,
   DUPLICATE_CHANGE: 2,
   PROXIMITY_ALERT: 1,
@@ -125,6 +127,17 @@ export interface JudgedPair {
 /** A changed path with its pairs judged once. */
 export interface JudgedPath extends PathRef {
   pairs: JudgedPair[];
+  /**
+   * When set, `pairs` holds only the pairs this actor (a `peerKey`) is in, and every
+   * other pair on the path is as it was last judged; when unset, `pairs` is every pair.
+   */
+  only?: string;
+}
+
+/** The actor whose heartbeat changed the index: only its pairs can have changed. */
+export interface Focus {
+  workingCopyId: string;
+  actor: Actor;
 }
 
 export interface CollidingPair {
@@ -190,6 +203,7 @@ export class LiveIndex {
   apply(heartbeat: Heartbeat, at: number): PathRef[] {
     const { repo, working_copy_id: workingCopyId, actor } = heartbeat;
     const aKey = actorKey(repo, workingCopyId, actor);
+    const peerId = peerKey(workingCopyId, actor);
     const touched = new Map<string, PathRef>();
     const listed = new Set(heartbeat.files.map((f) => f.path));
 
@@ -213,6 +227,7 @@ export class LiveIndex {
         repo,
         workingCopyId,
         actor,
+        peerId,
         author: heartbeat.author,
         branch: heartbeat.branch,
         baseSha: heartbeat.base_sha,
@@ -281,7 +296,7 @@ export class LiveIndex {
     const keep = (workingCopyId: string, peer: Entry, warning: Warning) => {
       let byPeer = result.get(workingCopyId);
       if (!byPeer) result.set(workingCopyId, (byPeer = new Map()));
-      const key = peerKey(peer.workingCopyId, peer.actor);
+      const key = peer.peerId;
       const held = byPeer.get(key);
       if (!held || RANK[warning.type] > RANK[held.type]) byPeer.set(key, warning);
     };
@@ -347,11 +362,22 @@ export class LiveIndex {
   }
 
   /**
-   * Judges every pair on each path once, so everything that follows one change (warning
-   * streams, history) shares the work instead of repeating it.
+   * Judges each path's pairs once, so everything that follows one change (warning
+   * streams, history) shares the work instead of repeating it. With a focus, the change
+   * was that actor's heartbeat, and only its pairs are judged: one actor against the
+   * path's other entries, not every entry against every other.
    */
-  judge(paths: PathRef[], now: number): JudgedPath[] {
-    return paths.map(({ repo, path }) => ({ repo, path, pairs: this.#pairsAt(repo, path, now) }));
+  judge(paths: PathRef[], now: number, focus?: Focus): JudgedPath[] {
+    if (!focus) {
+      return paths.map(({ repo, path }) => ({ repo, path, pairs: this.#pairsAt(repo, path, now) }));
+    }
+    const only = peerKey(focus.workingCopyId, focus.actor);
+    return paths.map(({ repo, path }) => ({
+      repo,
+      path,
+      pairs: this.#pairsAt(repo, path, now, only),
+      only,
+    }));
   }
 
   /** Every path with entries, expired or not. */
@@ -400,20 +426,24 @@ export class LiveIndex {
    * judged once per side — once in all when the two share a base, since the verdict is
    * then symmetric.
    */
-  #pairsAt(repo: string, path: string, now: number): JudgedPair[] {
+  #pairsAt(repo: string, path: string, now: number, only?: string): JudgedPair[] {
     const entries = this.entriesAt(repo, path, now);
     const pairs: JudgedPair[] = [];
+    const add = (a: Entry, b: Entry) => {
+      const ab = this.#judge(repo, path, a, b, now);
+      const ba =
+        a.baseSha === b.baseSha
+          ? ab && { ...ab, pair: { ...ab.pair, ours: ab.pair.theirs, theirs: ab.pair.ours } }
+          : this.#judge(repo, path, b, a, now);
+      if (ab || ba) pairs.push({ a, b, ab, ba });
+    };
+    if (only !== undefined) {
+      const focus = entries.find((e) => e.peerId === only);
+      if (focus) for (const other of entries) if (other !== focus) add(focus, other);
+      return pairs;
+    }
     for (let i = 0; i < entries.length; i++) {
-      const a = entries[i] as Entry;
-      for (let j = i + 1; j < entries.length; j++) {
-        const b = entries[j] as Entry;
-        const ab = this.#judge(repo, path, a, b, now);
-        const ba =
-          a.baseSha === b.baseSha
-            ? ab && { ...ab, pair: { ...ab.pair, ours: ab.pair.theirs, theirs: ab.pair.ours } }
-            : this.#judge(repo, path, b, a, now);
-        if (ab || ba) pairs.push({ a, b, ab, ba });
-      }
+      for (let j = i + 1; j < entries.length; j++) add(entries[i] as Entry, entries[j] as Entry);
     }
     return pairs;
   }
@@ -542,7 +572,7 @@ export class LiveIndex {
 }
 
 /** The warning one side sees about a peer entry. */
-function warningOf(verdict: Verdict, path: string, peer: Entry, now: number): Warning {
+export function warningOf(verdict: Verdict, path: string, peer: Entry, now: number): Warning {
   return {
     severity: verdict.severity,
     type: verdict.pair.type,

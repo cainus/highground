@@ -154,7 +154,8 @@ export class Hub {
 
   /** Every change to the index goes through here: collisions, radar watchers, listeners. */
   #changed(paths: PathRef[], now: number, cause: ChangeCause | null = null): void {
-    const judged = this.index.judge(paths, now);
+    // A heartbeat can only have changed its own actor's pairs.
+    const judged = this.index.judge(paths, now, cause ?? undefined);
     this.#tracker.refresh(judged, now);
     for (const repo of new Set(paths.map((p) => p.repo))) this.#radarChanged(repo);
     for (const listener of this.#changeListeners) listener(judged, cause, now);
@@ -275,7 +276,7 @@ export class Hub {
     listeners.add(listener);
     this.#streamOpened(key);
     try {
-      for (const warning of this.#tracker.current(repo, workingCopyId)) {
+      for (const warning of this.#tracker.current(repo, workingCopyId, this.#now())) {
         yield { event: "collision_started", warning };
       }
       while (!signal?.aborted) {
@@ -295,6 +296,11 @@ export class Hub {
       if (listeners.size === 0) this.#listeners.delete(key);
       this.#streamClosed(key, repo, workingCopyId);
     }
+  }
+
+  /** Whether a working copy holds an open stream, and so counts as present. */
+  present(repo: string, workingCopyId: string): boolean {
+    return this.#openStreams.has(`${repo}\0${workingCopyId}`);
   }
 
   #streamOpened(key: string): void {

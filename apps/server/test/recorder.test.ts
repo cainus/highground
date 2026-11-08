@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { allowAll } from "../src/auth.ts";
 import { startServer, type RunningServer } from "../src/server.ts";
 import { freshDatabase } from "./database.ts";
-import { ALICE, BOB, file, heartbeat, REPO } from "./fixtures.ts";
+import { ALICE, BOB, CAROL, file, heartbeat, REPO } from "./fixtures.ts";
 
 let db: Awaited<ReturnType<typeof freshDatabase>>;
 let sql: postgres.Sql;
@@ -83,6 +83,20 @@ describe("the collision recorder (plan 05)", () => {
       expect(row!.ended_by).toBe(row!.a_author === "2222@acme.com" ? "a" : "b");
       expect(row!.changed_course).toBe(false);
     });
+  });
+
+  it("leaves other pairs' episodes open when a third actor changes the same path", async () => {
+    const s = await server();
+    await eventually(async () => expect(s.recorder!.leading).toBe(true));
+    s.hub.heartbeat(heartbeat(ALICE, [file("a.ts", [10, 12])]));
+    s.hub.heartbeat(heartbeat(BOB, [file("a.ts", [11, 11])]));
+    // Carol works on the same file without colliding, then leaves it.
+    s.hub.heartbeat(heartbeat(CAROL, [file("a.ts", [90, 90])]));
+    s.hub.heartbeat(heartbeat(CAROL, [file("a.ts")]));
+    await s.recorder.flush();
+    expect(await rows()).toMatchObject([
+      { a_author: expect.any(String), b_author: expect.any(String), ended_at: null },
+    ]);
   });
 
   it("keeps the strongest verdict an episode reached", async () => {

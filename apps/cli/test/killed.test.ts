@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -54,6 +54,10 @@ describe("a killed daemon", () => {
     await eventually(async () => {
       expect((await peerQuery(hg.url, wc, "a.txt", 10, 10)).has_collisions).toBe(true);
     }, 15_000);
+
+    // Killed before its stream opens, a daemon is cleared by its TTL instead.
+    const id = readFileSync(join(wc.dir, ".highground/id"), "utf8").trim();
+    await eventually(() => expect(hg.server.hub.present(wc.repo, id)).toBe(true), 15_000);
 
     child.kill("SIGKILL");
     await exited;

@@ -226,12 +226,13 @@ export class Recorder {
   /**
    * Reconciles each changed path's open episodes with its colliding pairs: new pairs
    * begin, stronger verdicts escalate, and pairs this pass did not see end. Runs on the
-   * heartbeat path, so per pair it does no more than two lookups.
+   * heartbeat path, so per pair it does no more than two lookups. A focused pass (`only`)
+   * judged just its actor's pairs, so only that actor's episodes can end.
    */
   #changed(paths: JudgedPath[], cause: ChangeCause | null, now: number): void {
     if (!this.leading) return;
     const index = this.#options.hub.index;
-    for (const { repo, path, pairs } of paths) {
+    for (const { repo, path, pairs, only } of paths) {
       const pass = ++this.#pass;
       let open = this.#byPath.get(`${repo}\0${path}`);
       for (const pair of index.collidingPairs(repo, path, now, pairs)) {
@@ -250,7 +251,11 @@ export class Recorder {
       }
       if (!open) continue;
       for (const [key, episode] of open) {
-        if (episode.seen !== pass) this.#end(key, episode, cause, now);
+        if (episode.seen === pass) continue;
+        if (only !== undefined && !isCause(episode.a, cause) && !isCause(episode.b, cause)) {
+          continue;
+        }
+        this.#end(key, episode, cause, now);
       }
       if (open.size === 0) this.#byPath.delete(`${repo}\0${path}`);
     }
