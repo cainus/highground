@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collide, type Change, type FileReport, type Range } from "../src/index.ts";
+import { collide, strongestPair, type Change, type FileReport, type Range } from "../src/index.ts";
 
 /** A change with no digest — e.g. an agent's announced intent. */
 const intent = (range: Range): Change => ({ range, digest: null });
@@ -83,5 +83,29 @@ describe("collide", () => {
     expect(() => collide(report([]), { path: "b.ts", wholeFile: false, changes: [] })).toThrow(
       /path/,
     );
+  });
+});
+
+describe("strongestPair", () => {
+  it("names the two changes behind the most severe collision", () => {
+    const a = report([intent([1, 1]), intent([30, 31])]);
+    const b = report([intent([5, 5]), intent([31, 40])]);
+    expect(strongestPair(a, b)).toEqual({
+      type: "DIRECT_OVERLAP",
+      ours: intent([30, 31]),
+      theirs: intent([31, 40]),
+    });
+  });
+
+  it("names no change on a whole-file side", () => {
+    expect(strongestPair(report([], true), report([intent([7, 9])]))).toEqual({
+      type: "DIRECT_OVERLAP",
+      ours: null,
+      theirs: null,
+    });
+  });
+
+  it("is null when nothing collides", () => {
+    expect(strongestPair(report([intent([1, 1])]), report([intent([90, 90])]))).toBeNull();
   });
 });

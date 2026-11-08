@@ -124,7 +124,7 @@ oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` w
 - A heartbeat replaces the previous changes for **(repo, working copy, actor, file)**. Empty `changes` clears a file.
 - `scope: "complete"` — the batch is the actor's entire state; files it omits are cleared. `scope: "partial"` — only listed files are replaced.
 - `ttl_seconds` 5–300, default 60. Limits: `intent` ≤ 280 chars, ≤ 50 ranges per file, ≤ 200 files per heartbeat.
-- The heartbeat is appended to the log before it is acknowledged. The response contains the current warnings for the submitted ranges.
+- The heartbeat is applied and acknowledged at once; the log write follows within about 5 ms, group-committed and retried until it lands (ADR 0002). The response contains the current warnings for the submitted ranges.
 
 ### 5.2 `GET /api/v1/warnings`
 
@@ -235,7 +235,7 @@ Tooling: TypeScript, Vitest, Oxfmt + Oxlint, Drizzle. Shipped as one Docker imag
 
 1. **Agreement with git.** A fast-check differential test generates random base files and pairs of edits, runs a real `git merge`, and asserts DIRECT_OVERLAP ⇔ CONFLICT over thousands of cases.
 2. **Interval math properties.** Symmetry, translate-and-back identity, idempotent complete heartbeats; 100 % branch coverage of `packages/core` enforced in Vitest.
-3. **Latency.** An autocannon benchmark in CI at 100 working copies and 300 actors (heartbeats, queries, SSE) keeps p99 under 10 ms for queries and heartbeats.
+3. **Latency.** An autocannon benchmark in CI, on Linux, at 100 working copies and 300 actors keeps p99 under 10 ms for queries and heartbeats. A developer laptop cannot settle this: a do-nothing HTTP server measured p99 9–16 ms there.
 4. **Never blocks.** No endpoint takes a lock a client waits on; every client failure path fails open and is logged.
 5. **Stale data cleared.** A killed client's warnings disappear within `ttl_seconds + 5 s`, and within 10 s when it held an SSE stream — tested with fake timers and with one real-time integration test.
-6. **Restart safety.** After a server restart, every unexpired range is warned on again without any client re-sending.
+6. **Restart safety.** After a server restart, every unexpired range that reached the log is warned on again without any client re-sending; a crash loses at most the last flush, which clients restore with their next complete snapshot.

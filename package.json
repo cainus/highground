@@ -8,7 +8,8 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc",
     "lint": "oxlint",
-    "fmt": "oxfmt"
+    "fmt": "oxfmt",
+    "bench": "pnpm --filter @highground/server bench"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
