@@ -1,7 +1,7 @@
 import type { Me, Radar, RadarFile, Reporting } from "@highground/core";
 import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useApi } from "../api.tsx";
 import { FileRadar } from "../components/file-radar.tsx";
@@ -13,8 +13,8 @@ function mineOnly(radar: Radar, me: Me | null): RadarFile[] {
   return radar.files.filter((file) => file.work.some((w) => emails.has(w.author)));
 }
 
-/** Every branch with work on the radar, with how many collisions it is in: most first. */
-function branchesOf(files: RadarFile[]): { branch: string; collisions: number }[] {
+/** Every branch with work on the radar, with how many collisions it is in. */
+function branchesOf(files: RadarFile[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const file of files) {
     const branchOf = new Map(file.work.map((w) => [w.id, w.branch]));
@@ -25,9 +25,7 @@ function branchesOf(files: RadarFile[]): { branch: string; collisions: number }[
       }
     }
   }
-  return [...counts]
-    .map(([branch, collisions]) => ({ branch, collisions }))
-    .sort((x, y) => y.collisions - x.collisions || x.branch.localeCompare(y.branch));
+  return counts;
 }
 
 /**
@@ -70,7 +68,20 @@ function BranchSummary({ files, branch }: { files: RadarFile[]; branch: string }
 const collisionCount = (n: number) =>
   n === 0 ? "no collisions" : n === 1 ? "1 collision" : `${n} collisions`;
 
-/** Chooses one branch to see alone, or all of them. */
+/** Whether every word typed appears in a branch's name, in any case and order. */
+const matches = (branch: string, query: string) => {
+  const name = branch.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .every((term) => name.includes(term));
+};
+
+/**
+ * Chooses one branch to see alone, or all of them: a list in name order, so a branch
+ * stays put while collisions come and go, narrowed by typing. A branch stays listed once
+ * seen, marked as having no work, so it does not vanish from under the pointer.
+ */
 function BranchPicker({
   files,
   branch,
@@ -80,27 +91,57 @@ function BranchPicker({
   branch: string | null;
   onChange: (branch: string | null) => void;
 }) {
-  const branches = branchesOf(files);
-  // A branch in the URL that has no work now still shows as chosen.
-  if (branch && !branches.some((b) => b.branch === branch)) {
-    branches.push({ branch, collisions: 0 });
-  }
-  return (
-    <label className="mb-4 flex flex-wrap items-center gap-2 text-sm text-secondary">
-      Branch
-      <select
-        className="max-w-full rounded-md border border-border bg-surface-1 px-2 py-1 text-primary"
-        value={branch ?? ""}
-        onChange={(event) => onChange(event.target.value || null)}
+  const [query, setQuery] = useState("");
+  const seen = useRef(new Set<string>());
+  const counts = branchesOf(files);
+  for (const name of counts.keys()) seen.current.add(name);
+  if (branch) seen.current.add(branch);
+  const shown = [...seen.current]
+    .filter((name) => matches(name, query.trim()))
+    .sort((x, y) => x.localeCompare(y));
+  const item = (name: string | null, label: string, detail?: string) => (
+    <li key={name ?? ""}>
+      <button
+        type="button"
+        aria-current={branch === name ? "true" : undefined}
+        onClick={() => onChange(name)}
+        className="w-full rounded-md px-2 py-1 text-left hover:bg-surface-2 aria-[current=true]:bg-surface-2 aria-[current=true]:font-semibold"
       >
-        <option value="">All branches</option>
-        {branches.map((b) => (
-          <option key={b.branch} value={b.branch}>
-            {`${b.branch} — ${collisionCount(b.collisions)}`}
-          </option>
-        ))}
-      </select>
-    </label>
+        <span className="block font-mono text-sm break-all text-primary">{label}</span>
+        {detail && <span className="block text-xs text-muted">{detail}</span>}
+      </button>
+    </li>
+  );
+  return (
+    <nav
+      aria-label="Branches"
+      className="grid content-start gap-2 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)]"
+    >
+      <input
+        type="search"
+        aria-label="Find a branch"
+        placeholder="Find a branch"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && shown[0] !== undefined) {
+            onChange(shown[0]);
+            setQuery("");
+          } else if (event.key === "Escape") {
+            setQuery("");
+          }
+        }}
+        className="rounded-md border border-border bg-surface-1 px-2 py-1 text-sm text-primary"
+      />
+      <ul className="max-h-60 overflow-y-auto md:max-h-none">
+        {item(null, "All branches")}
+        {shown.map((name) => {
+          const n = counts.get(name);
+          return item(name, name, n === undefined ? "no work now" : collisionCount(n));
+        })}
+      </ul>
+      {shown.length === 0 && <p className="px-2 text-sm text-muted">No branch matches.</p>}
+    </nav>
   );
 }
 
@@ -177,26 +218,33 @@ export function RadarPage({ me, mine }: { me: Me | null; mine: boolean }) {
           The radar is unavailable: {radar.error.message}
         </p>
       )}
-      {radar.data && (scope.length > 0 || branch) && (
-        <BranchPicker files={scope} branch={branch} onChange={chooseBranch} />
-      )}
-      {radar.data && branch && <BranchSummary files={scope} branch={branch} />}
-      {radar.data && files.length === 0 && branch && (
-        <p className="text-secondary">{branch} collides with no one right now.</p>
-      )}
-      {radar.data && files.length === 0 && !branch && (
+      {radar.data && scope.length === 0 && !branch && (
         <Empty reporting={radar.data.reporting} mine={mine} />
       )}
-      <div className="grid gap-4">
-        {files.map((file) => (
-          <FileRadar
-            key={file.path}
-            file={file}
-            focused={file.path === focus}
-            mine={new Set(me?.emails)}
+      {radar.data && (scope.length > 0 || branch) && (
+        <div className="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)]">
+          <BranchPicker
+            key={`${repo}\0${mine}`}
+            files={scope}
+            branch={branch}
+            onChange={chooseBranch}
           />
-        ))}
-      </div>
+          <div className="grid content-start gap-4">
+            {branch && <BranchSummary files={scope} branch={branch} />}
+            {files.length === 0 && branch && (
+              <p className="text-secondary">{branch} collides with no one right now.</p>
+            )}
+            {files.map((file) => (
+              <FileRadar
+                key={file.path}
+                file={file}
+                focused={file.path === focus}
+                mine={new Set(me?.emails)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -310,7 +310,7 @@ describe("radar", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows one branch's collisions alone, chosen from the branches by how many it has", async () => {
+  it("shows one branch's collisions alone, chosen from a list of branches by name", async () => {
     const state = stubState();
     const high = {
       type: "DIRECT_OVERLAP",
@@ -355,20 +355,25 @@ describe("radar", () => {
       }),
     );
     renderApp(state);
-    const picker = await screen.findByRole("combobox", { name: /branch/i });
-    expect(
-      within(picker)
-        .getAllByRole("option")
-        .map((o) => o.textContent),
-    ).toEqual([
+    const branches = within(await screen.findByRole("navigation", { name: "Branches" }));
+    // In name order, so a branch stays where it was as its collisions change.
+    expect(branches.getAllByRole("button").map((b) => b.textContent)).toEqual([
       "All branches",
-      "fix/two — 3 collisions",
-      "fix/three — 2 collisions",
-      "fix/one — 1 collision",
+      "fix/one1 collision",
+      "fix/three2 collisions",
+      "fix/two3 collisions",
     ]);
+    expect(branches.getByRole("button", { name: /^All branches/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
 
-    await userEvent.selectOptions(picker, "fix/one");
+    await userEvent.click(branches.getByRole("button", { name: /^fix\/one/ }));
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(1));
+    expect(branches.getByRole("button", { name: /^fix\/one/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
     const a = within(screen.getByRole("article", { name: "a.ts" }));
     expect(a.getByText(line("fix/one ↔ fix/two"))).toBeInTheDocument();
     expect(a.queryByText(line("fix/two ↔ fix/three"))).not.toBeInTheDocument();
@@ -378,8 +383,78 @@ describe("radar", () => {
         .map((row) => row.textContent),
     ).toEqual([expect.stringMatching(/^fix\/one/), expect.stringMatching(/^fix\/two/)]);
 
-    await userEvent.selectOptions(picker, "All branches");
+    await userEvent.click(branches.getByRole("button", { name: /^All branches/ }));
     expect(await screen.findAllByRole("article")).toHaveLength(3);
+  });
+
+  it("finds a branch by typing parts of its name, and Enter opens the first match", async () => {
+    const state = stubState();
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "a.ts",
+            base_sha: SHA,
+            work: [
+              work("a1", "me@acme.com", [[1, 2]], { branch: "pd-2366-pr-dependencies" }),
+              work("a2", "me@acme.com", [[1, 2]], { branch: "pd-2351-raise-not-500" }),
+              work("a3", "me@acme.com", [[1, 2]], { branch: "metrics/m2-walk-shape" }),
+            ],
+            collisions: [],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const nav = within(await screen.findByRole("navigation", { name: "Branches" }));
+    const find = nav.getByRole("searchbox", { name: /find a branch/i });
+
+    await userEvent.type(find, "PD 500");
+    expect(nav.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "All branches",
+      expect.stringMatching(/^pd-2351-raise-not-500/),
+    ]);
+
+    await userEvent.clear(find);
+    await userEvent.type(find, "walk{Enter}");
+    expect(
+      await screen.findByRole("region", { name: "metrics/m2-walk-shape" }),
+    ).toBeInTheDocument();
+    expect(find).toHaveValue("");
+
+    await userEvent.type(find, "nothing like it");
+    expect(nav.getByText(/no branch matches/i)).toBeInTheDocument();
+  });
+
+  it("keeps a branch listed, and in place, when its work stops reporting", async () => {
+    const state = stubState();
+    const radar = (branches: string[]) => ({
+      ...emptyRadar(REPO),
+      files: [
+        {
+          path: "a.ts",
+          base_sha: SHA,
+          work: branches.map((branch, i) => work(`w${i}`, "me@acme.com", [[1, 2]], { branch })),
+          collisions: [],
+        },
+      ],
+    });
+    const feed = new RadarFeed(radar(["fix/a", "fix/b", "fix/c"]));
+    state.feeds.set(REPO, feed);
+    renderApp(state);
+    const nav = within(await screen.findByRole("navigation", { name: "Branches" }));
+    expect(nav.getAllByRole("button")).toHaveLength(4);
+
+    feed.push(radar(["fix/a", "fix/c"]));
+    await waitFor(() => expect(nav.getByText("no work now")).toBeInTheDocument());
+    expect(nav.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "All branches",
+      "fix/ano collisions",
+      "fix/bno work now",
+      "fix/cno collisions",
+    ]);
   });
 
   it("shows what each branch is for, beside its work and above its collisions", async () => {
@@ -420,11 +495,12 @@ describe("radar", () => {
     expect(collisions.getByText("fix/one")).toHaveAttribute("title", why);
     expect(collisions.getByText("fix/two")).not.toHaveAttribute("title");
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /branch/i }), "fix/one");
+    const branches = within(screen.getByRole("navigation", { name: "Branches" }));
+    await userEvent.click(branches.getByRole("button", { name: /^fix\/one/ }));
     const about = await screen.findByRole("region", { name: "fix/one" });
     expect(within(about).getByText(why)).toBeInTheDocument();
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /branch/i }), "fix/two");
+    await userEvent.click(branches.getByRole("button", { name: /^fix\/two/ }));
     expect(
       within(await screen.findByRole("region", { name: "fix/two" })).getByText(
         /hasn't said what it's for/i,
@@ -450,7 +526,11 @@ describe("radar", () => {
     );
     renderApp(state, `/radar/${REPO}?branch=fix/one`);
     expect(await screen.findByText(/fix\/one collides with no one/i)).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /branch/i })).toHaveValue("fix/one");
+    expect(
+      within(screen.getByRole("navigation", { name: "Branches" })).getByRole("button", {
+        name: /^fix\/one/,
+      }),
+    ).toHaveAttribute("aria-current", "true");
   });
 
   it("opens at the file a notification pointed to", async () => {
