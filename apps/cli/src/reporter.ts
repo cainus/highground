@@ -1,4 +1,3 @@
-import { watch, type FSWatcher } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   capChanges,
@@ -21,13 +20,13 @@ import {
   RepoStateError,
   repoState,
   snapshot,
-  watchTargets,
   type ParkedBranch,
   type RepoState,
 } from "@highground/git";
 import type { Log } from "@highground/log";
 import { VERSION } from "./version.ts";
 import { describeError, type ServerClient } from "./server-client.ts";
+import { WorkingCopyWatcher } from "./watcher.ts";
 
 export interface ReporterOptions {
   /** Any directory inside the working copy. */
@@ -85,7 +84,7 @@ export class Reporter {
   readable = false;
 
   readonly #options: Required<ReporterOptions>;
-  readonly #watchers = new Map<string, FSWatcher>();
+  readonly #watcher = new WorkingCopyWatcher(() => this.#schedule());
   readonly #abort = new AbortController();
   readonly #collisions = new Map<string, Warning>();
   #debounce: NodeJS.Timeout | undefined;
@@ -128,8 +127,7 @@ export class Reporter {
     this.#stopped = true;
     clearTimeout(this.#debounce);
     clearInterval(this.#keepalive);
-    for (const watcher of this.#watchers.values()) watcher.close();
-    this.#watchers.clear();
+    this.#watcher.close();
     this.#abort.abort();
     await Promise.allSettled([this.#running, this.#subscription, this.#merging]);
   }
@@ -171,7 +169,7 @@ export class Reporter {
       this.readable = true;
       this.id ??= await ensureIdentity(state.root);
       this.#options.onState(state, this.id);
-      if (this.#options.watch) await this.#syncWatches(state.root);
+      if (this.#options.watch) await this.#watcher.sync(state.root);
       files = toFiles(await diffRanges(state.root, state.base));
       parked = null;
       if (this.#options.reportsParked(state)) {
@@ -362,32 +360,6 @@ export class Reporter {
   #degrade(msg: string, reason: string): void {
     if (this.degraded !== reason) this.#options.log.warn({ root: this.#options.root, reason }, msg);
     this.degraded = reason;
-  }
-
-  async #syncWatches(root: string): Promise<void> {
-    const targets = new Set(await watchTargets(root));
-    for (const [dir, watcher] of this.#watchers) {
-      if (!targets.has(dir)) {
-        watcher.close();
-        this.#watchers.delete(dir);
-      }
-    }
-    for (const dir of targets) {
-      if (this.#watchers.has(dir) || this.#stopped) continue;
-      try {
-        const watcher = watch(dir, (_event, name) => {
-          if (dir === root && name === ".highground") return;
-          this.#schedule();
-        });
-        watcher.on("error", () => {
-          watcher.close();
-          this.#watchers.delete(dir);
-        });
-        this.#watchers.set(dir, watcher);
-      } catch {
-        // The directory vanished between listing and watching; the next sync catches up.
-      }
-    }
   }
 
   #schedule(): void {

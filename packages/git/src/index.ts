@@ -345,6 +345,27 @@ export async function findIdentity(start: string): Promise<{ root: string; id: s
   }
 }
 
+/** The working copy's own git directory, outside it for a linked worktree. */
+export async function absoluteGitDir(root: string): Promise<string> {
+  return (await git(root, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+}
+
+/**
+ * What git ignores in a working copy, relative to its root: ignored directories once
+ * each, ending in `/`, and ignored files outside them.
+ */
+export async function ignoredPaths(root: string): Promise<string[]> {
+  const out = await git(root, [
+    "ls-files",
+    "-z",
+    "--others",
+    "--ignored",
+    "--exclude-standard",
+    "--directory",
+  ]);
+  return out.stdout.split("\0").filter(Boolean);
+}
+
 /**
  * The directories to watch for changes to a working copy: every directory holding a
  * tracked or untracked, non-ignored file, so `node_modules` and build output cost no

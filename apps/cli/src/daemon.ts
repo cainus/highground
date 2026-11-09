@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { unwatchFile, watchFile } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname } from "node:path";
@@ -45,8 +45,8 @@ export class Daemon {
   /** Working-copy roots whose `daemon.json` this daemon wrote. */
   readonly #announced = new Set<string>();
   #http: Server | undefined;
-  #configWatcher: FSWatcher | undefined;
-  #configTimer: NodeJS.Timeout | undefined;
+  /** The config file being polled, if any. */
+  #configWatched: string | undefined;
   #stopped = false;
 
   constructor(options: DaemonOptions) {
@@ -61,8 +61,14 @@ export class Daemon {
   async start(): Promise<void> {
     await this.#listen();
     const config = this.#options.configDir ? await readConfig(this.#options.configDir) : null;
-    for (const dir of [...this.#options.dirs, ...(config?.workingCopies ?? [])])
-      await this.add(dir);
+    // Four at a time: a first report runs several git commands, and dozens of worktrees
+    // one after another keep the daemon from saying it is up for a minute or more.
+    const dirs = [...this.#options.dirs, ...(config?.workingCopies ?? [])];
+    await Promise.all(
+      Array.from({ length: Math.min(4, dirs.length) }, async () => {
+        for (let dir = dirs.shift(); dir !== undefined; dir = dirs.shift()) await this.add(dir);
+      }),
+    );
     if (this.#options.configDir) this.#watchConfig(this.#options.configDir);
     this.#options.log.info(
       { port: this.port, workingCopies: this.#reporters.size, server: this.#options.server },
@@ -72,8 +78,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.#stopped = true;
-    clearTimeout(this.#configTimer);
-    this.#configWatcher?.close();
+    if (this.#configWatched) unwatchFile(this.#configWatched);
     await Promise.all([...this.#reporters.values()].map((r) => r.stop()));
     await Promise.all([...this.#announced].map((root) => this.#withdraw(root)));
     const http = this.#http;
@@ -181,15 +186,17 @@ export class Daemon {
     if (text.includes(this.secret)) await rm(daemonFilePath(root), { force: true });
   }
 
+  /**
+   * Re-reads the config when it changes. It is one small file, so it is polled once a
+   * second rather than watched: a poll cannot miss a change made as the daemon starts,
+   * before a watch is live, nor one on a bind mount that delivers no events.
+   */
   #watchConfig(dir: string): void {
-    void mkdir(dir, { recursive: true }).then(() => {
-      if (this.#stopped) return;
-      this.#configWatcher = watch(dir, (_event, name) => {
-        if (name !== "config.json") return;
-        clearTimeout(this.#configTimer);
-        this.#configTimer = setTimeout(() => void this.#reloadConfig(dir), 100);
-      });
+    const file = configFile(dir);
+    watchFile(file, { interval: 1000 }, (current, previous) => {
+      if (current.mtimeMs !== previous.mtimeMs) void this.#reloadConfig(dir);
     });
+    this.#configWatched = file;
   }
 
   async #reloadConfig(dir: string): Promise<void> {

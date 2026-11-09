@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  absoluteGitDir,
   derivedId,
   ensureIdentity,
   ensureRepositoryIdentity,
   fileHunks,
+  ignoredPaths,
   findIdentity,
   RepoStateError,
   repoState,
@@ -194,6 +196,30 @@ describe("repository identity", () => {
     const dir = makeRepo({ "a.txt": "x\n" });
     const ids = await Promise.all(Array.from({ length: 8 }, () => ensureRepositoryIdentity(dir)));
     expect(new Set(ids).size).toBe(1);
+  });
+});
+
+describe("ignoredPaths", () => {
+  it("lists ignored directories once each and ignored files outside them", async () => {
+    const dir = makeRepo({ ".gitignore": "node_modules/\n*.log\n", "a.txt": "x\n" });
+    write(dir, {
+      "node_modules/p/index.js": "x\n",
+      "node_modules/q.js": "x\n",
+      "x.log": "x\n",
+      "new.txt": "x\n",
+    });
+    expect((await ignoredPaths(dir)).sort()).toEqual(["node_modules/", "x.log"]);
+  });
+});
+
+describe("absoluteGitDir", () => {
+  it("is the worktree's own git directory, outside a linked worktree", async () => {
+    const dir = makeRepo({ "a.txt": "x\n" });
+    const tree = `${dir}-wt`;
+    run(dir, "worktree", "add", "-q", tree);
+    expect(await absoluteGitDir(dir)).toBe(realpathSync(join(dir, ".git")));
+    expect(await absoluteGitDir(tree)).toMatch(/\.git\/worktrees\/[^/]+$/);
+    run(dir, "worktree", "remove", "--force", tree);
   });
 });
 

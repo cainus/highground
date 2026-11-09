@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const created: string[] = [];
 
@@ -22,8 +22,12 @@ export function run(dir: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
 }
 
+/** Writes files, creating the directories they are in. */
 export function write(dir: string, files: Record<string, string>): void {
-  for (const [path, content] of Object.entries(files)) writeFileSync(join(dir, path), content);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
 }
 
 export function commitAll(dir: string, message: string): string {
