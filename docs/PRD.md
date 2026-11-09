@@ -191,7 +191,7 @@ One CLI, `highground`:
 - **`mcp`** — stdio MCP server, one per agent. Tools:
   - `broadcast_edit_intent(path, ranges[], intent, ttl_seconds)` — ranges in working-copy coordinates; sent as a partial heartbeat for the agent actor; returns current collisions in working-copy coordinates.
   - `check_file_radar(path, ranges[])` — read-only check.
-  - `describe_work(summary)` — what the agent is working on in this working copy and why, in plain language, up to 1,000 characters. Kept in `.highground/summary.md`, which a person may also write; every heartbeat from the working copy carries it as `summary`, and the latest wins. The radar shows it beside the working copy's work and above a branch's collisions, and a peer's warning carries it as `peer.summary`. An empty summary removes it.
+  - `describe_work(summary)` — what the agent is working on in this working copy and why, in plain language, up to 1,000 characters. Kept in `.highground/summary.md`, which a person may also write; every heartbeat from the working copy carries it as `summary`, and the latest wins. The radar shows it beside the working copy's work, above a branch's collisions, and on hovering the branch's name in a collision, and a peer's warning carries it as `peer.summary`. An empty summary removes it. Pushed work has no agent; the title of its open pull request is its summary.
   - Repo, branch, base, and working copy are derived locally; the agent never passes them.
   - Daemon discovery order: `HIGHGROUND_DAEMON_URL` → `.highground/daemon.json` (tries `127.0.0.1`, then `host.docker.internal`) → run git directly → fail open with `{degraded: true, reason, warnings: []}`.
   - Never writes anything but protocol messages to stdout.

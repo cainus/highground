@@ -27,11 +27,35 @@ export function workName(work: RadarWork): string {
   return work.actor.type === "agent" ? `${work.branch} · ${work.actor.id}` : work.branch;
 }
 
-/** A collision's two sides by name, adding each author only when the authors differ. */
-function pairName(a: RadarWork, b: RadarWork): string {
-  const side = (w: RadarWork) =>
-    a.author === b.author ? workName(w) : `${w.author} · ${workName(w)}`;
-  return `${side(a)} ↔ ${side(b)}`;
+/**
+ * A collision's two sides by name, adding each author only when the authors differ.
+ * Hovering a side's name shows what its work is for, when it said.
+ */
+function PairName({ a, b }: { a: RadarWork; b: RadarWork }) {
+  const side = (w: RadarWork) => {
+    const named = w.summary ? (
+      <span
+        title={w.summary}
+        className="cursor-help underline decoration-dotted underline-offset-4"
+      >
+        {workName(w)}
+      </span>
+    ) : (
+      <span>{workName(w)}</span>
+    );
+    return a.author === b.author ? (
+      named
+    ) : (
+      <>
+        {w.author} · {named}
+      </>
+    );
+  };
+  return (
+    <>
+      {side(a)} ↔ {side(b)}
+    </>
+  );
 }
 
 type WholeFile = Exclude<RadarWork["whole_file"], false>;
@@ -132,7 +156,7 @@ export function FileRadar({
               <li key={`${c.a}|${c.b}`} className="flex flex-wrap items-center gap-2 text-sm">
                 <Severity level={c.severity} />
                 <span className="font-medium text-primary">
-                  {a && b ? pairName(a, b) : `${c.a} ↔ ${c.b}`}
+                  {a && b ? <PairName a={a} b={b} /> : `${c.a} ↔ ${c.b}`}
                 </span>
                 <span className="text-secondary">{verdict(c, a, b)}</span>
               </li>

@@ -30,6 +30,12 @@ export interface GitHubUser {
 export type Access = "read" | "denied" | "invalid";
 
 /** The App is not installed on the repository's owner, or not given that repository. */
+/** An open pull request, as pushed work shows it. */
+export interface PullRequest {
+  url: string;
+  title: string;
+}
+
 export class NotInstalledError extends Error {
   constructor(repo: string) {
     super(`the GitHub App is not installed for ${repo}`);
@@ -119,20 +125,26 @@ export class GitHubApp {
     return { "http.extraHeader": `Authorization: Basic ${basic}` };
   }
 
-  /** Open pull requests whose head is a branch of `repo` itself: branch → PR URL. */
-  async openPullRequests(repo: string): Promise<Map<string, string>> {
+  /** Open pull requests whose head is a branch of `repo` itself: branch → its URL and title. */
+  async openPullRequests(repo: string): Promise<Map<string, PullRequest>> {
     const token = await this.installationToken(repo);
-    const result = new Map<string, string>();
+    const result = new Map<string, PullRequest>();
     for (let page = 1; ; page++) {
       const res = await this.#api(
         `/repos/${fullName(repo)}/pulls?state=open&per_page=100&page=${page}`,
         { token },
       );
       const pulls = await this.#json<
-        { html_url: string; head: { ref: string; repo: { full_name: string } | null } }[]
+        {
+          html_url: string;
+          title: string;
+          head: { ref: string; repo: { full_name: string } | null };
+        }[]
       >(res, `pulls for ${repo}`);
       for (const pull of pulls) {
-        if (pull.head.repo?.full_name === fullName(repo)) result.set(pull.head.ref, pull.html_url);
+        if (pull.head.repo?.full_name === fullName(repo)) {
+          result.set(pull.head.ref, { url: pull.html_url, title: pull.title });
+        }
       }
       if (pulls.length < 100) return result;
     }

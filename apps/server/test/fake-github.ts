@@ -12,6 +12,7 @@ export interface FakePull {
   /** The head's repository, `owner/name`; a fork's differs from the base's. */
   headRepo?: string;
   number: number;
+  title?: string;
 }
 
 /**
@@ -126,6 +127,7 @@ export class FakeGitHub {
       const all = (this.pulls.get(match[1]!) ?? []).map((p) => ({
         number: p.number,
         html_url: `https://github.com/${match![1]}/pull/${p.number}`,
+        title: p.title ?? `Pull request ${p.number}`,
         head: { ref: p.head, repo: { full_name: p.headRepo ?? match![1] } },
       }));
       return send(200, all.slice((page - 1) * perPage, page * perPage));

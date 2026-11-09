@@ -16,6 +16,11 @@ import {
 
 const REPO = "github.com/acme/api";
 
+/** Text split across elements, as a collision line's names are: the element holding it all. */
+const line = (text: string) => (_: string, element: Element | null) =>
+  element?.textContent === text &&
+  [...element.children].every((child) => child.textContent !== text);
+
 function renderApp(state: StubState, path = `/radar/${REPO}`) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -109,7 +114,7 @@ describe("radar", () => {
     expect(rows.getByText("pushed")).toBeInTheDocument();
     expect(
       within(auth.getByRole("list", { name: "Collisions" })).getByText(
-        "alice@acme.com · feature ↔ bob@acme.com · feature/jwt",
+        line("alice@acme.com · feature ↔ bob@acme.com · feature/jwt"),
       ),
     ).toBeInTheDocument();
   });
@@ -242,9 +247,9 @@ describe("radar", () => {
         within(screen.getByRole("article", { name })).getByRole("list", { name: "Collisions" }),
       );
     await screen.findByRole("article", { name: "mine.ts" });
-    expect(collisions("mine.ts").getByText("fix/one ↔ fix/two")).toBeInTheDocument();
+    expect(collisions("mine.ts").getByText(line("fix/one ↔ fix/two"))).toBeInTheDocument();
     expect(
-      collisions("shared.ts").getByText("me@acme.com · fix/one ↔ bob@acme.com · feature"),
+      collisions("shared.ts").getByText(line("me@acme.com · fix/one ↔ bob@acme.com · feature")),
     ).toBeInTheDocument();
   });
 
@@ -291,7 +296,7 @@ describe("radar", () => {
     renderApp(state);
     const guide = within(await screen.findByRole("article", { name: "docs/guide.md" }));
     const collisions = within(guide.getByRole("list", { name: "Collisions" }));
-    expect(collisions.getByText("pd-site-config-api ↔ veripages-e2")).toBeInTheDocument();
+    expect(collisions.getByText(line("pd-site-config-api ↔ veripages-e2"))).toBeInTheDocument();
     expect(collisions.getByText("veripages-e2 deletes this file")).toBeInTheDocument();
     expect(collisions.queryByText(/same lines/i)).not.toBeInTheDocument();
     const rows = within(guide.getByRole("list", { name: "Work" }));
@@ -365,8 +370,8 @@ describe("radar", () => {
     await userEvent.selectOptions(picker, "fix/one");
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(1));
     const a = within(screen.getByRole("article", { name: "a.ts" }));
-    expect(a.getByText("fix/one ↔ fix/two")).toBeInTheDocument();
-    expect(a.queryByText("fix/two ↔ fix/three")).not.toBeInTheDocument();
+    expect(a.getByText(line("fix/one ↔ fix/two"))).toBeInTheDocument();
+    expect(a.queryByText(line("fix/two ↔ fix/three"))).not.toBeInTheDocument();
     expect(
       within(a.getByRole("list", { name: "Work" }))
         .getAllByRole("listitem")
@@ -409,6 +414,11 @@ describe("radar", () => {
     renderApp(state);
     const rows = within(await screen.findByRole("list", { name: "Work" })).getAllByRole("listitem");
     expect(within(rows[0]!).getByText(why)).toBeInTheDocument();
+    // In a collision, hovering a branch's name says what it is for.
+    const collisions = within(screen.getByRole("list", { name: "Collisions" }));
+    expect(collisions.getByText(line("fix/one ↔ fix/two"))).toBeInTheDocument();
+    expect(collisions.getByText("fix/one")).toHaveAttribute("title", why);
+    expect(collisions.getByText("fix/two")).not.toHaveAttribute("title");
 
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /branch/i }), "fix/one");
     const about = await screen.findByRole("region", { name: "fix/one" });

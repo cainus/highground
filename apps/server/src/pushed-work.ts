@@ -1,4 +1,5 @@
 import { capChanges, HeartbeatSchema, type FileHeartbeat, type FileReport } from "@highground/core";
+import type { PullRequest } from "./github.ts";
 import { branches, defaultBranch, derivedId, diffCommits, mergeBaseOf } from "@highground/git";
 import type { Hub } from "./hub.ts";
 import type { Mirror } from "./mirror.ts";
@@ -11,8 +12,8 @@ const TTL_SECONDS = 300;
 export interface PushedWorkOptions {
   mirror: Mirror;
   hub: Hub;
-  /** Open pull requests, branch → URL; absent without a GitHub App. */
-  pulls?: (repo: string) => Promise<Map<string, string>>;
+  /** Open pull requests by branch; absent without a GitHub App. */
+  pulls?: (repo: string) => Promise<Map<string, PullRequest>>;
   onError?: (repo: string, error: unknown) => void;
 }
 
@@ -39,10 +40,10 @@ export class PushedWork {
     const mainHead = all.find((b) => b.name === main)?.head;
     if (!mainHead) return;
     const pulls = await (
-      this.#options.pulls?.(repo) ?? Promise.resolve(new Map<string, string>())
+      this.#options.pulls?.(repo) ?? Promise.resolve(new Map<string, PullRequest>())
     ).catch((error: unknown) => {
       this.#options.onError?.(repo, error);
-      return new Map<string, string>();
+      return new Map<string, PullRequest>();
     });
 
     const published = new Set<string>();
@@ -78,7 +79,9 @@ export class PushedWork {
             kind: "pushed",
             head_sha: branch.head,
             last_commit_at: branch.committedAt,
-            pr_url: pulls.get(branch.name) ?? null,
+            pr_url: pulls.get(branch.name)?.url ?? null,
+            // No agent works on pushed work; what its pull request says it is for stands in.
+            summary: pulls.get(branch.name)?.title.slice(0, 1000) ?? null,
           }),
         );
       }

@@ -44,7 +44,10 @@ describe("GitHubApp", () => {
     ]);
     const pulls = await app().openPullRequests("github.com/acme/api");
     expect(pulls.size).toBe(120);
-    expect(pulls.get("b119")).toBe("https://github.com/acme/api/pull/120");
+    expect(pulls.get("b119")).toEqual({
+      url: "https://github.com/acme/api/pull/120",
+      title: "Pull request 120",
+    });
     expect(pulls.has("main")).toBe(false);
   });
 

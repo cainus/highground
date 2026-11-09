@@ -120,7 +120,7 @@ describe("pushed work", () => {
   it("warns live work about an unmerged pushed branch, with its head, author and PR", async () => {
     const o = origin();
     const head = branch(o.dir, "feature/b1", { "a.txt": lines(30).replace("line5\n", "five\n") });
-    gh.pulls.set("acme/api", [{ head: "feature/b1", number: 9 }]);
+    gh.pulls.set("acme/api", [{ head: "feature/b1", number: 9, title: "Retry flaky crawls" }]);
     const s = await server(o.dir);
     s.mirror!.track(REPO);
     await s.mirror!.round();
@@ -135,6 +135,8 @@ describe("pushed work", () => {
           head_sha: head,
           author: "test@example.com",
           pr_url: "https://github.com/acme/api/pull/9",
+          // What the pull request says it is for stands in for an agent's summary.
+          summary: "Retry flaky crawls",
           lines: [5, 5],
         },
       },
