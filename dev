@@ -1,0 +1,4 @@
+#!/bin/sh
+# Highground on this machine: ./dev, ./dev watch [dir…], ./dev mcp, ./dev stop.
+# See scripts/dev.ts.
+exec node "$(dirname "$0")/scripts/dev.ts" "$@"

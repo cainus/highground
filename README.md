@@ -2,6 +2,19 @@
 
 Highground tells developers and coding agents when someone else, on any branch, is changing the same lines they are. It is advisory and never blocks anyone. The design is in [docs/PRD.md](docs/PRD.md), and the words it uses are in [CONTEXT.md](CONTEXT.md).
 
+## Trying it on your own machine
+
+`./dev` runs everything for one person: the server and Postgres in Docker, open but reachable only from this machine, and the daemon in your terminal.
+
+```sh
+./dev watch ~/code/my-repo ~/code/my-repo/.worktrees/*/   # once: what the daemon reports
+./dev mcp                                                # once: Highground's tools in every Claude Code session
+./dev                                                    # start, or update after a pull; Ctrl-C stops the daemon
+./dev stop                                               # stop the server; its data is kept
+```
+
+The dashboard is on http://127.0.0.1:8090. `./dev` uses ports 8090 and 5434, so it runs beside services on 8080 and 5432.
+
 ## Running an instance
 
 One image, `ghcr.io/cainus/highground`, holds the server and the dashboard. `docker-compose.yml` runs it with Postgres.
