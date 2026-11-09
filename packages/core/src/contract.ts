@@ -188,10 +188,19 @@ export const RadarFileSchema = z.object({
   collisions: z.array(RadarCollisionSchema),
 });
 
+/** Whether anyone is reporting a repository, so an empty radar can say why it is empty. */
+export const ReportingSchema = z.object({
+  /** Working copies with a live heartbeat inside its ttl, idle ones included. */
+  working_copies: z.number().int().nonnegative(),
+  /** The latest heartbeat of any kind this server has seen since it started; null if none. */
+  last_heartbeat_at: z.iso.datetime().nullable(),
+});
+
 export const RadarSchema = z.object({
   repo: RepoSchema,
   /** Worst collisions first. */
   files: z.array(RadarFileSchema),
+  reporting: ReportingSchema,
 });
 
 export const RepoInputSchema = z.object({ repo: RepoSchema });
@@ -354,6 +363,7 @@ export type UserTokens = z.infer<typeof UserTokensSchema>;
 export type Me = z.infer<typeof MeSchema>;
 export type Radar = z.infer<typeof RadarSchema>;
 export type RadarFile = z.infer<typeof RadarFileSchema>;
+export type Reporting = z.infer<typeof ReportingSchema>;
 export type RadarWork = z.infer<typeof RadarWorkSchema>;
 export type RadarCollision = z.infer<typeof RadarCollisionSchema>;
 export type History = z.infer<typeof HistorySchema>;

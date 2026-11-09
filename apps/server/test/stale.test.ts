@@ -134,3 +134,72 @@ describe("a restart", () => {
     expect(collides(second)).toBe(false);
   });
 });
+
+describe("who is reporting a repository", () => {
+  const reporting = (h: Hub) => h.radar(REPO).reporting;
+  const idle = (
+    workingCopyId: string,
+    ttl = 60,
+    actor: Heartbeat["actor"] = { type: "cli", id: "daemon" },
+  ) => heartbeat(workingCopyId, [], { scope: "complete", ttl_seconds: ttl, actor });
+
+  it("counts working copies whose live heartbeats are within their ttl, idle ones too", async () => {
+    const h = await hub();
+    expect(reporting(h)).toEqual({ working_copies: 0, last_heartbeat_at: null });
+
+    h.heartbeat(idle(ALICE));
+    h.heartbeat(idle(ALICE, 300, { type: "agent", id: "agent-1" }));
+    h.heartbeat(heartbeat(BOB, [file("a.ts", [1, 3])], { ttl_seconds: 60 }));
+    // Parked work is the repository's, not a client's.
+    h.heartbeat(
+      heartbeat(CAROL, [file("b.ts", [1, 3])], { kind: "parked", head_sha: SHA, ttl_seconds: 300 }),
+    );
+    const sent = new Date().toISOString();
+    expect(reporting(h)).toEqual({ working_copies: 2, last_heartbeat_at: sent });
+
+    await advance(60_000);
+    expect(reporting(h)).toEqual({ working_copies: 1, last_heartbeat_at: sent });
+    await advance(240_000);
+    expect(reporting(h)).toEqual({ working_copies: 0, last_heartbeat_at: sent });
+  });
+
+  it("tells radar watchers when it changes, though no file did", async () => {
+    const h = await hub();
+    const controller = new AbortController();
+    const seen: number[] = [];
+    void (async () => {
+      for await (const radar of h.watchRadar(REPO, controller.signal))
+        seen.push(radar.reporting.working_copies);
+    })();
+    await advance(0);
+    h.heartbeat(idle(ALICE));
+    await advance(1_000);
+    expect(seen).toEqual([0, 1]);
+
+    await advance(60_000 + SWEEP_MS);
+    expect(seen).toEqual([0, 1, 0]);
+    controller.abort();
+  });
+
+  it("stops counting an idle working copy soon after its stream goes away", async () => {
+    const h = await hub();
+    const alice = follow(h, ALICE);
+    h.heartbeat(idle(ALICE, 300));
+    await advance(0);
+    alice.close();
+    await advance(GRACE_MS + 5_000 + SWEEP_MS);
+    expect(reporting(h).working_copies).toBe(0);
+  });
+
+  it("is rebuilt on restart from the log", async () => {
+    const store = new MemoryStore();
+    const first = await hub(store);
+    first.heartbeat(idle(ALICE));
+    const sent = new Date().toISOString();
+    await first.stop();
+    hubs.splice(hubs.indexOf(first), 1);
+
+    await advance(10_000);
+    expect(reporting(await hub(store))).toEqual({ working_copies: 1, last_heartbeat_at: sent });
+  });
+});

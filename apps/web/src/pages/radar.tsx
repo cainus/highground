@@ -1,15 +1,50 @@
-import type { Me, Radar, RadarFile } from "@highground/core";
+import type { Me, Radar, RadarFile, Reporting } from "@highground/core";
 import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
 import { useEffect } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useApi } from "../api.tsx";
 import { FileRadar } from "../components/file-radar.tsx";
+import { ago } from "@/lib/utils";
 
 /** The files that hold the viewer's own work, with everyone's work on them. */
 function mineOnly(radar: Radar, me: Me | null): RadarFile[] {
   const emails = new Set(me?.emails ?? []);
   return radar.files.filter((file) => file.work.some((w) => emails.has(w.author)));
+}
+
+/**
+ * Why a radar is empty. With no daemon reporting, it cannot say no one is working, only
+ * that it cannot see them, and since when.
+ */
+function Empty({ reporting, mine }: { reporting: Reporting; mine: boolean }) {
+  if (reporting.working_copies === 0) {
+    const last = reporting.last_heartbeat_at;
+    return (
+      <div className="grid gap-1">
+        <p className="text-secondary">No daemon is reporting this repository.</p>
+        <p className="text-sm text-muted">
+          {last
+            ? `Last heartbeat ${ago(Math.max(0, Math.floor((Date.now() - Date.parse(last)) / 1000)))}. `
+            : "Nothing has reported here since the server started. "}
+          Run <code className="font-mono">highground daemon</code> in a working copy to report it.
+        </p>
+      </div>
+    );
+  }
+  const n = reporting.working_copies;
+  return (
+    <div className="grid gap-1">
+      <p className="text-secondary">
+        {mine
+          ? "None of your work is in flight in this repository."
+          : "No one is changing anything in this repository right now."}
+      </p>
+      <p className="text-sm text-muted">
+        {n === 1 ? "1 working copy is reporting." : `${n} working copies are reporting.`}
+      </p>
+    </div>
+  );
 }
 
 /** Radar (PRD §10), or My work: the same live view filtered to the viewer's own work. */
@@ -42,13 +77,7 @@ export function RadarPage({ me, mine }: { me: Me | null; mine: boolean }) {
           The radar is unavailable: {radar.error.message}
         </p>
       )}
-      {radar.data && files.length === 0 && (
-        <p className="text-secondary">
-          {mine
-            ? "None of your work is in flight in this repository."
-            : "No one is changing anything in this repository right now."}
-        </p>
-      )}
+      {radar.data && files.length === 0 && <Empty reporting={radar.data.reporting} mine={mine} />}
       <div className="grid gap-4">
         {files.map((file) => (
           <FileRadar

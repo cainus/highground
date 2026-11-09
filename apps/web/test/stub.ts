@@ -5,9 +5,23 @@ import {
   type Me,
   type PushSubscription,
   type Radar,
+  type Reporting,
 } from "@highground/core";
 import type { ContractRouterClient } from "@orpc/contract";
 import { createRouterClient, implement, ORPCError } from "@orpc/server";
+
+/** One daemon reporting, just now: what a radar says unless a test says otherwise. */
+export const REPORTING: Reporting = {
+  working_copies: 1,
+  last_heartbeat_at: new Date().toISOString(),
+};
+
+/** A radar with no work in flight. */
+export const emptyRadar = (repo: string, reporting: Reporting = REPORTING): Radar => ({
+  repo,
+  files: [],
+  reporting,
+});
 
 /** A radar stream the test feeds, one snapshot at a time. */
 export class RadarFeed {
@@ -60,7 +74,7 @@ export function stubClient(state: StubState): ContractRouterClient<typeof contra
   const os = implement(contract);
   const feed = (repo: string) => {
     let f = state.feeds.get(repo);
-    if (!f) state.feeds.set(repo, (f = new RadarFeed({ repo, files: [] })));
+    if (!f) state.feeds.set(repo, (f = new RadarFeed(emptyRadar(repo))));
     return f;
   };
   const signedIn = () => {

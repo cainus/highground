@@ -49,7 +49,11 @@ describe("the radar over the API", () => {
     const controller = new AbortController();
     const stream = await client.watchRadar({ repo: REPO }, { signal: controller.signal });
     const first = await stream.next();
-    expect(first.value).toEqual({ repo: REPO, files: [] });
+    expect(first.value).toEqual({
+      repo: REPO,
+      files: [],
+      reporting: { working_copies: 0, last_heartbeat_at: null },
+    });
 
     // Five heartbeats within the window are one update, carrying all of them.
     const started = Date.now();

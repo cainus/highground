@@ -11,6 +11,7 @@ import {
   type Pair,
   type RadarCollision,
   type RadarFile,
+  type Reporting,
   type RadarWork,
   type Warning,
 } from "@highground/core";
@@ -188,6 +189,15 @@ export class LiveIndex {
   readonly #byPath = new Map<string, Map<string, Entry>>();
   /** actorKey → paths that actor has entries for */
   readonly #byActor = new Map<string, Set<string>>();
+  /** repo → actorKey → the live actor's latest heartbeat, files or none */
+  readonly #reporting = new Map<
+    string,
+    Map<string, ActorState & { workingCopyId: string; expiresAt: number }>
+  >();
+  /** repo → when any heartbeat for it last arrived */
+  readonly #lastHeard = new Map<string, number>();
+  /** Repositories whose count of reporting working copies changed, until taken. */
+  readonly #reportingChanged = new Set<string>();
 
   constructor(oracle?: Oracle) {
     this.#oracle = oracle;
@@ -206,6 +216,7 @@ export class LiveIndex {
     const peerId = peerKey(workingCopyId, actor);
     const touched = new Map<string, PathRef>();
     const listed = new Set(heartbeat.files.map((f) => f.path));
+    this.#heard(heartbeat, aKey, at);
 
     if (heartbeat.scope === "complete") {
       // A copy: #remove deletes from this same set while we iterate.
@@ -247,8 +258,67 @@ export class LiveIndex {
     return [...touched.values()];
   }
 
+  /** Notes who reported: every heartbeat dates the repository, a live one counts its sender. */
+  #heard(heartbeat: Heartbeat, aKey: string, at: number): void {
+    const { repo } = heartbeat;
+    this.#lastHeard.set(repo, Math.max(at, this.#lastHeard.get(repo) ?? at));
+    if (heartbeat.kind !== "live") return;
+    let actors = this.#reporting.get(repo);
+    if (!actors) this.#reporting.set(repo, (actors = new Map()));
+    // Usually the actor's own keepalive, which settles it without a scan.
+    const own = actors.get(aKey);
+    if (!(own && own.expiresAt > at) && !this.#isReporting(actors, heartbeat.working_copy_id, at)) {
+      this.#reportingChanged.add(repo);
+    }
+    // The latest heartbeat's ttl, not the longest: a working copy clearing itself goes soon.
+    actors.set(aKey, {
+      workingCopyId: heartbeat.working_copy_id,
+      actor: heartbeat.actor,
+      author: heartbeat.author,
+      branch: heartbeat.branch,
+      baseSha: heartbeat.base_sha,
+      expiresAt: at + heartbeat.ttl_seconds * 1000,
+    });
+  }
+
+  #isReporting(
+    actors: Map<string, { workingCopyId: string; expiresAt: number }>,
+    workingCopyId: string,
+    now: number,
+  ): boolean {
+    for (const a of actors.values())
+      if (a.workingCopyId === workingCopyId && a.expiresAt > now) return true;
+    return false;
+  }
+
+  /** How many working copies report a repository, and when it was last heard from. */
+  reporting(repo: string, now: number): Reporting {
+    const copies = new Set<string>();
+    for (const a of this.#reporting.get(repo)?.values() ?? []) {
+      if (a.expiresAt > now) copies.add(a.workingCopyId);
+    }
+    const last = this.#lastHeard.get(repo);
+    return {
+      working_copies: copies.size,
+      last_heartbeat_at: last === undefined ? null : new Date(last).toISOString(),
+    };
+  }
+
+  /** The repositories whose reporting count changed since the last call. */
+  takeReportingChanges(): string[] {
+    const repos = [...this.#reportingChanged];
+    this.#reportingChanged.clear();
+    return repos;
+  }
+
   /** Removes entries expired at `now`; returns the paths they were on. */
   expire(now: number): PathRef[] {
+    for (const [repo, actors] of this.#reporting) {
+      const before = this.reporting(repo, now - 1).working_copies;
+      for (const [aKey, a] of actors) if (a.expiresAt <= now) actors.delete(aKey);
+      if (actors.size === 0) this.#reporting.delete(repo);
+      if (this.reporting(repo, now).working_copies !== before) this.#reportingChanged.add(repo);
+    }
     const touched = new Map<string, PathRef>();
     for (const [pKey, entries] of this.#byPath) {
       for (const [aKey, entry] of entries) {
@@ -532,22 +602,35 @@ export class LiveIndex {
     return result;
   }
 
-  /** The actors with entries in a working copy, for clearing it when its stream goes away. */
+  /**
+   * The actors of a working copy, with entries or reporting idle, for clearing it when
+   * its stream goes away.
+   */
   actorsOf(repo: string, workingCopyId: string): ActorState[] {
     const prefix = `${repo}\0${workingCopyId}\0`;
-    const states: ActorState[] = [];
+    const states = new Map<string, ActorState>();
     for (const [aKey, paths] of this.#byActor) {
       if (!aKey.startsWith(prefix)) continue;
       const [first] = paths;
       const entry = this.#byPath.get(first as string)?.get(aKey) as Entry;
-      states.push({
+      states.set(aKey, {
         actor: entry.actor,
         author: entry.author,
         branch: entry.branch,
         baseSha: entry.baseSha,
       });
     }
-    return states;
+    for (const [aKey, a] of this.#reporting.get(repo) ?? []) {
+      if (a.workingCopyId === workingCopyId && !states.has(aKey)) {
+        states.set(aKey, {
+          actor: a.actor,
+          author: a.author,
+          branch: a.branch,
+          baseSha: a.baseSha,
+        });
+      }
+    }
+    return [...states.values()];
   }
 
   #put(aKey: string, entry: Entry): void {

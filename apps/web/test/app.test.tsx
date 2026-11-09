@@ -3,7 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { App } from "../src/app.tsx";
-import { RadarFeed, SHA, stubClient, stubState, work, type StubState } from "./stub.ts";
+import {
+  emptyRadar,
+  RadarFeed,
+  REPORTING,
+  SHA,
+  stubClient,
+  stubState,
+  work,
+  type StubState,
+} from "./stub.ts";
 
 const REPO = "github.com/acme/api";
 
@@ -17,6 +26,7 @@ function renderApp(state: StubState, path = `/radar/${REPO}`) {
 
 const collidingRadar = {
   repo: REPO,
+  reporting: REPORTING,
   files: [
     {
       path: "src/auth.ts",
@@ -100,7 +110,7 @@ describe("radar", () => {
 
   it("updates live as the stream sends a new radar, without a reload", async () => {
     const state = stubState();
-    const feed = new RadarFeed({ repo: REPO, files: [] });
+    const feed = new RadarFeed(emptyRadar(REPO));
     state.feeds.set(REPO, feed);
     renderApp(state);
     expect(await screen.findByText(/no one is changing anything/i)).toBeInTheDocument();
@@ -111,15 +121,48 @@ describe("radar", () => {
 
   it("shows a spinner, not an empty radar, until the first radar arrives", async () => {
     const state = stubState();
-    const feed = new RadarFeed({ repo: REPO, files: [] }, { held: true });
+    const feed = new RadarFeed(emptyRadar(REPO), { held: true });
     state.feeds.set(REPO, feed);
     renderApp(state);
     expect(await screen.findByRole("status", { name: /loading the radar/i })).toBeInTheDocument();
     expect(screen.queryByText(/no one is changing anything/i)).not.toBeInTheDocument();
 
-    feed.push({ repo: REPO, files: [] });
+    feed.push(emptyRadar(REPO));
     expect(await screen.findByText(/no one is changing anything/i)).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: /loading the radar/i })).not.toBeInTheDocument();
+  });
+
+  it("says when no daemon is reporting, and when one was last heard from", async () => {
+    const state = stubState();
+    const threeHoursAgo = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const feed = new RadarFeed(
+      emptyRadar(REPO, { working_copies: 0, last_heartbeat_at: threeHoursAgo }),
+    );
+    state.feeds.set(REPO, feed);
+    renderApp(state);
+    expect(await screen.findByText(/no daemon is reporting this repository/i)).toBeInTheDocument();
+    expect(screen.getByText(/last heartbeat 3 h ago/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no one is changing/i)).not.toBeInTheDocument();
+
+    feed.push(emptyRadar(REPO, { working_copies: 0, last_heartbeat_at: null }));
+    expect(
+      await screen.findByText(/nothing has reported here since the server started/i),
+    ).toBeInTheDocument();
+  });
+
+  it("says no one is changing anything, and how many working copies report, when none has work", async () => {
+    const state = stubState();
+    state.feeds.set(REPO, new RadarFeed(emptyRadar(REPO, { ...REPORTING, working_copies: 3 })));
+    renderApp(state);
+    expect(await screen.findByText(/no one is changing anything/i)).toBeInTheDocument();
+    expect(screen.getByText("3 working copies are reporting.")).toBeInTheDocument();
+  });
+
+  it("in My work, also says when no daemon is reporting", async () => {
+    const state = stubState();
+    state.feeds.set(REPO, new RadarFeed(emptyRadar(REPO, { ...REPORTING, working_copies: 0 })));
+    renderApp(state, `/mine/${REPO}`);
+    expect(await screen.findByText(/no daemon is reporting this repository/i)).toBeInTheDocument();
   });
 
   it("opens at the file a notification pointed to", async () => {
@@ -234,7 +277,7 @@ describe("Web Push", () => {
       },
     });
     Object.assign(globalThis, { PushManager: function PushManager() {} });
-    state.feeds.set(REPO, new RadarFeed({ repo: REPO, files: [] }));
+    state.feeds.set(REPO, new RadarFeed(emptyRadar(REPO)));
     renderApp(state);
 
     await userEvent.click(await screen.findByRole("button", { name: /notify me/i }));

@@ -157,7 +157,8 @@ export class Hub {
     // A heartbeat can only have changed its own actor's pairs.
     const judged = this.index.judge(paths, now, cause ?? undefined);
     this.#tracker.refresh(judged, now);
-    for (const repo of new Set(paths.map((p) => p.repo))) this.#radarChanged(repo);
+    const repos = new Set([...paths.map((p) => p.repo), ...this.index.takeReportingChanges()]);
+    for (const repo of repos) this.#radarChanged(repo);
     for (const listener of this.#changeListeners) listener(judged, cause, now);
   }
 
@@ -191,7 +192,8 @@ export class Hub {
   }
 
   radar(repo: string): Radar {
-    return { repo, files: this.index.radar(repo, this.#now()) };
+    const now = this.#now();
+    return { repo, files: this.index.radar(repo, now), reporting: this.index.reporting(repo, now) };
   }
 
   /**
@@ -337,6 +339,8 @@ export class Hub {
           base_sha: state.baseSha,
           scope: "complete",
           files: [],
+          // The shortest ttl: a working copy that went away stops counting as reporting soon.
+          ttl_seconds: 5,
         }),
       );
     }
