@@ -305,6 +305,99 @@ describe("radar", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows one branch's collisions alone, chosen from the branches by how many it has", async () => {
+    const state = stubState();
+    const high = {
+      type: "DIRECT_OVERLAP",
+      severity: "HIGH",
+      confirmed: null,
+      approximate: false,
+    } as const;
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "a.ts",
+            base_sha: SHA,
+            work: [
+              work("a1", "me@acme.com", [[1, 2]], { branch: "fix/one" }),
+              work("a2", "me@acme.com", [[1, 2]], { branch: "fix/two" }),
+              work("a3", "me@acme.com", [[1, 2]], { branch: "fix/three" }),
+            ],
+            collisions: [
+              { a: "a1", b: "a2", ...high },
+              { a: "a2", b: "a3", ...high },
+            ],
+          },
+          {
+            path: "b.ts",
+            base_sha: SHA,
+            work: [
+              work("b2", "me@acme.com", [[5, 6]], { branch: "fix/two" }),
+              work("b3", "me@acme.com", [[5, 6]], { branch: "fix/three" }),
+            ],
+            collisions: [{ a: "b2", b: "b3", ...high }],
+          },
+          {
+            path: "quiet.ts",
+            base_sha: SHA,
+            work: [work("c1", "me@acme.com", [[1, 1]], { branch: "fix/one" })],
+            collisions: [],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const picker = await screen.findByRole("combobox", { name: /branch/i });
+    expect(
+      within(picker)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual([
+      "All branches",
+      "fix/two — 3 collisions",
+      "fix/three — 2 collisions",
+      "fix/one — 1 collision",
+    ]);
+
+    await userEvent.selectOptions(picker, "fix/one");
+    await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(1));
+    const a = within(screen.getByRole("article", { name: "a.ts" }));
+    expect(a.getByText("fix/one ↔ fix/two")).toBeInTheDocument();
+    expect(a.queryByText("fix/two ↔ fix/three")).not.toBeInTheDocument();
+    expect(
+      within(a.getByRole("list", { name: "Work" }))
+        .getAllByRole("listitem")
+        .map((row) => row.textContent),
+    ).toEqual([expect.stringMatching(/^fix\/one/), expect.stringMatching(/^fix\/two/)]);
+
+    await userEvent.selectOptions(picker, "All branches");
+    expect(await screen.findAllByRole("article")).toHaveLength(3);
+  });
+
+  it("opens with a branch chosen from the URL, and says when it collides with no one", async () => {
+    const state = stubState();
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "quiet.ts",
+            base_sha: SHA,
+            work: [work("c1", "me@acme.com", [[1, 1]], { branch: "fix/one" })],
+            collisions: [],
+          },
+        ],
+      }),
+    );
+    renderApp(state, `/radar/${REPO}?branch=fix/one`);
+    expect(await screen.findByText(/fix\/one collides with no one/i)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /branch/i })).toHaveValue("fix/one");
+  });
+
   it("opens at the file a notification pointed to", async () => {
     const state = stubState();
     state.feeds.set(REPO, new RadarFeed(structuredClone(collidingRadar) as never));
