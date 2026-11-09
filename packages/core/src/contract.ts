@@ -1,5 +1,6 @@
 import { eventIterator, oc } from "@orpc/contract";
 import { z } from "zod";
+import { WHOLE_FILE_REASONS } from "./diff.ts";
 import { isRange, type Range } from "./ranges.ts";
 
 /** `[start, end]` in base coordinates; `end = start - 1` is an insertion point (PRD §3.1). */
@@ -26,9 +27,17 @@ export const RepoPathSchema = z
     "must be relative to the repository root",
   );
 
+/**
+ * False when work names lines; otherwise why it covers the whole file. An older client's
+ * `true` gave no reason, and reads as `whole`.
+ */
+export const WholeFileSchema = z
+  .union([z.boolean(), z.enum(WHOLE_FILE_REASONS)])
+  .transform((value) => (value === true ? ("whole" as const) : value));
+
 export const FileHeartbeatSchema = z.object({
   path: RepoPathSchema,
-  whole_file: z.boolean().default(false),
+  whole_file: WholeFileSchema.default(false),
   changes: z.array(ChangeSchema).max(50),
   intent: z.string().max(280).nullable().default(null),
 });
@@ -96,6 +105,8 @@ export const WarningSchema = z.object({
     head_sha: z.string().nullable(),
     pr_url: z.string().nullable(),
     lines: RangeSchema.nullable(),
+    /** Why the peer's work covers the whole file (it deletes it, say), or false. */
+    whole_file: WholeFileSchema.default(false),
     intent: z.string().nullable(),
     last_heartbeat_seconds_ago: z.number().int(),
   }),
@@ -162,7 +173,7 @@ export const RadarWorkSchema = z.object({
   pr_url: z.url().nullable(),
   /** The base the work was reported against. */
   base_sha: CommitShaSchema,
-  whole_file: z.boolean(),
+  whole_file: WholeFileSchema,
   /** In the file's display base; untranslated, and `approximate`, when that is not yet known. */
   lines: z.array(RangeSchema),
   approximate: z.boolean(),

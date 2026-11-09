@@ -5,7 +5,7 @@ import { collide, strongestPair, type Change, type FileReport, type Range } from
 const intent = (range: Range): Change => ({ range, digest: null });
 const edit = (range: Range, digest: string): Change => ({ range, digest });
 
-const report = (changes: Change[], wholeFile = false): FileReport => ({
+const report = (changes: Change[], wholeFile: FileReport["wholeFile"] = false): FileReport => ({
   path: "a.ts",
   wholeFile,
   changes,
@@ -65,9 +65,9 @@ describe("collide", () => {
   });
 
   it("treats a whole-file change as overlapping anything in the same path", () => {
-    expect(collide(report([], true), report([intent([500, 500])]))).toBe("DIRECT_OVERLAP");
-    expect(collide(report([intent([1, 1])]), report([], true))).toBe("DIRECT_OVERLAP");
-    expect(collide(report([], true), report([]))).toBe("DIRECT_OVERLAP");
+    expect(collide(report([], "deleted"), report([intent([500, 500])]))).toBe("DIRECT_OVERLAP");
+    expect(collide(report([intent([1, 1])]), report([], "deleted"))).toBe("DIRECT_OVERLAP");
+    expect(collide(report([], "deleted"), report([]))).toBe("DIRECT_OVERLAP");
   });
 
   it("finds nothing when either side has no changes", () => {
@@ -98,7 +98,7 @@ describe("strongestPair", () => {
   });
 
   it("names no change on a whole-file side", () => {
-    expect(strongestPair(report([], true), report([intent([7, 9])]))).toEqual({
+    expect(strongestPair(report([], "deleted"), report([intent([7, 9])]))).toEqual({
       type: "DIRECT_OVERLAP",
       ours: null,
       theirs: null,

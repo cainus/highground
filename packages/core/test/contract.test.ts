@@ -35,6 +35,19 @@ describe("HeartbeatSchema", () => {
     });
   });
 
+  it("says why a whole file is reported, and reads an older client's `true` as no reason", () => {
+    const wholeFile = (value: unknown) =>
+      HeartbeatSchema.safeParse(
+        heartbeat({ files: [{ path: "a.ts", whole_file: value, changes: [] }] }),
+      );
+    for (const reason of ["added", "deleted", "binary", "renamed"]) {
+      expect(wholeFile(reason).data?.files[0]?.whole_file).toBe(reason);
+    }
+    expect(wholeFile(true).data?.files[0]?.whole_file).toBe("whole");
+    expect(wholeFile(false).data?.files[0]?.whole_file).toBe(false);
+    expect(wholeFile("moved").success).toBe(false);
+  });
+
   it.each([
     ["an insertion point", [[6, 5]]],
     ["the top-of-file insertion point", [[1, 0]]],

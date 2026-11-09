@@ -64,7 +64,7 @@ export async function broadcastIntent(
     files: [
       {
         path: request.path,
-        whole_file: hunks === null && request.ranges.length > 0,
+        whole_file: hunks === null && request.ranges.length > 0 ? "whole" : false,
         changes: hunks
           ? request.ranges.map((range) => ({ range: toBase(range, hunks).range, digest: null }))
           : [],

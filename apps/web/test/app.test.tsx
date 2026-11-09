@@ -105,7 +105,13 @@ describe("radar", () => {
     // Each work row names its lines, so nothing depends on reading the bar's colour.
     const rows = within(auth.getByRole("list", { name: "Work" }));
     expect(rows.getByText("lines 10–20")).toBeInTheDocument();
-    expect(rows.getByText(/pushed · feature\/jwt/)).toBeInTheDocument();
+    expect(rows.getByText("feature/jwt")).toBeInTheDocument();
+    expect(rows.getByText("pushed")).toBeInTheDocument();
+    expect(
+      within(auth.getByRole("list", { name: "Collisions" })).getByText(
+        "alice@acme.com · feature ↔ bob@acme.com · feature/jwt",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("updates live as the stream sends a new radar, without a reload", async () => {
@@ -165,7 +171,7 @@ describe("radar", () => {
     expect(await screen.findByText(/no daemon is reporting this repository/i)).toBeInTheDocument();
   });
 
-  it("names live work by author and branch, so one person's worktrees can be told apart", async () => {
+  it("names work by its branch first, with its author and kind beside it", async () => {
     const state = stubState();
     const file = { path: "a.ts", base_sha: SHA, collisions: [] };
     state.feeds.set(
@@ -181,15 +187,122 @@ describe("radar", () => {
                 branch: "fix/two",
                 actor: { type: "agent", id: "claude-1" },
               }),
+              work("c", "bob@acme.com", [[8, 9]], { branch: "fix/three", kind: "parked" }),
             ],
           },
         ],
       }),
     );
     renderApp(state);
-    const rows = within(await screen.findByRole("list", { name: "Work" }));
-    expect(rows.getByText("me@acme.com · fix/one")).toBeInTheDocument();
-    expect(rows.getByText("me@acme.com · fix/two · claude-1")).toBeInTheDocument();
+    const rows = within(await screen.findByRole("list", { name: "Work" })).getAllByRole("listitem");
+    expect(within(rows[0]!).getByText("fix/one")).toBeInTheDocument();
+    expect(within(rows[0]!).getByText("me@acme.com")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("fix/two · claude-1")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("fix/three")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("parked")).toBeInTheDocument();
+  });
+
+  it("names a collision by its branches, and by its authors only when they differ", async () => {
+    const state = stubState();
+    const collision = {
+      type: "DIRECT_OVERLAP",
+      severity: "HIGH",
+      confirmed: null,
+      approximate: false,
+    } as const;
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "mine.ts",
+            base_sha: SHA,
+            work: [
+              work("a", "me@acme.com", [[1, 2]], { branch: "fix/one" }),
+              work("b", "me@acme.com", [[1, 2]], { branch: "fix/two" }),
+            ],
+            collisions: [{ a: "a", b: "b", ...collision }],
+          },
+          {
+            path: "shared.ts",
+            base_sha: SHA,
+            work: [
+              work("c", "me@acme.com", [[1, 2]], { branch: "fix/one" }),
+              work("d", "bob@acme.com", [[1, 2]], { branch: "feature" }),
+            ],
+            collisions: [{ a: "c", b: "d", ...collision }],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const collisions = (name: string) =>
+      within(
+        within(screen.getByRole("article", { name })).getByRole("list", { name: "Collisions" }),
+      );
+    await screen.findByRole("article", { name: "mine.ts" });
+    expect(collisions("mine.ts").getByText("fix/one ↔ fix/two")).toBeInTheDocument();
+    expect(
+      collisions("shared.ts").getByText("me@acme.com · fix/one ↔ bob@acme.com · feature"),
+    ).toBeInTheDocument();
+  });
+
+  it("says when work deletes, adds or renames the whole file, not just that it is whole", async () => {
+    const state = stubState();
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "docs/guide.md",
+            base_sha: SHA,
+            work: [
+              work("a", "me@acme.com", [[27, 27]], { branch: "pd-site-config-api" }),
+              work("b", "me@acme.com", [], { branch: "veripages-e2", whole_file: "deleted" }),
+            ],
+            collisions: [
+              {
+                a: "a",
+                b: "b",
+                type: "DIRECT_OVERLAP",
+                severity: "HIGH",
+                confirmed: null,
+                approximate: false,
+              },
+            ],
+          },
+          {
+            path: "new.md",
+            base_sha: SHA,
+            work: [work("c", "me@acme.com", [], { branch: "fix/one", whole_file: "added" })],
+            collisions: [],
+          },
+          {
+            path: "moved.md",
+            base_sha: SHA,
+            work: [work("d", "me@acme.com", [], { branch: "fix/one", whole_file: "renamed" })],
+            collisions: [],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const guide = within(await screen.findByRole("article", { name: "docs/guide.md" }));
+    const collisions = within(guide.getByRole("list", { name: "Collisions" }));
+    expect(collisions.getByText("pd-site-config-api ↔ veripages-e2")).toBeInTheDocument();
+    expect(collisions.getByText("veripages-e2 deletes this file")).toBeInTheDocument();
+    expect(collisions.queryByText(/same lines/i)).not.toBeInTheDocument();
+    const rows = within(guide.getByRole("list", { name: "Work" }));
+    expect(rows.getByText("line 27")).toBeInTheDocument();
+    expect(rows.getByText("deletes the file")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("article", { name: "new.md" })).getByText("new file"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("article", { name: "moved.md" })).getByText("renamed to this path"),
+    ).toBeInTheDocument();
   });
 
   it("opens at the file a notification pointed to", async () => {

@@ -203,11 +203,11 @@ describe("hunkToRange", () => {
 });
 
 describe("reportsFromDiff", () => {
-  it("states each change in base coordinates with a digest of its new content, per PRD §3.2", () => {
+  it("states each change in base coordinates with a digest of its new content, per PRD §3.2, and why a whole file is reported", () => {
     expect(reportsFromDiff(parseDiff(REAL_DIFF), digest)).toEqual([
-      { path: "added.txt", wholeFile: true, changes: [] },
-      { path: "bin.dat", wholeFile: true, changes: [] },
-      { path: "deleted.txt", wholeFile: true, changes: [] },
+      { path: "added.txt", wholeFile: "added", changes: [] },
+      { path: "bin.dat", wholeFile: "binary", changes: [] },
+      { path: "deleted.txt", wholeFile: "deleted", changes: [] },
       {
         path: "mod.txt",
         wholeFile: false,
@@ -223,9 +223,9 @@ describe("reportsFromDiff", () => {
         wholeFile: false,
         changes: [{ range: [10, 10], digest: '["r10 Y"]' }],
       },
-      { path: "new name.txt", wholeFile: true, changes: [] },
+      { path: "new name.txt", wholeFile: "renamed", changes: [] },
       { path: "pure-rename.txt", wholeFile: false, changes: [] },
-      { path: "renamed.txt", wholeFile: true, changes: [] },
+      { path: "renamed.txt", wholeFile: "renamed", changes: [] },
     ]);
   });
 });

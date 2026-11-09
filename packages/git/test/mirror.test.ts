@@ -79,7 +79,7 @@ describe("mirror plumbing", () => {
     await fetchMirror(mirror);
     expect(await diffCommits(mirror, base, head)).toMatchObject([
       { path: "a.txt", wholeFile: false, changes: [{ range: [5, 5] }] },
-      { path: "new.txt", wholeFile: true, changes: [] },
+      { path: "new.txt", wholeFile: "added", changes: [] },
     ]);
   });
 

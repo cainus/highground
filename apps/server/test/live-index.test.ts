@@ -31,6 +31,7 @@ describe("LiveIndex", () => {
           head_sha: null,
           pr_url: null,
           lines: [50, 75],
+          whole_file: false,
           intent: "async verify",
           last_heartbeat_seconds_ago: 4,
         },
@@ -114,11 +115,11 @@ describe("LiveIndex", () => {
       expect(index.warnings(ask(ALICE, "a.ts", 1, 1), T0)).toEqual([]);
     });
 
-    it("a whole-file change collides with any line and names no lines", () => {
+    it("a whole-file change collides with any line, names no lines, and says why", () => {
       const index = new LiveIndex();
-      index.apply(heartbeat(BOB, [{ path: "new.ts", whole_file: true, changes: [] }]), T0);
-      expect(index.warnings(ask(ALICE, "new.ts", 900, 900), T0)).toMatchObject([
-        { type: "DIRECT_OVERLAP", your_lines: null, peer: { lines: null } },
+      index.apply(heartbeat(BOB, [{ path: "gone.ts", whole_file: "deleted", changes: [] }]), T0);
+      expect(index.warnings(ask(ALICE, "gone.ts", 900, 900), T0)).toMatchObject([
+        { type: "DIRECT_OVERLAP", your_lines: null, peer: { lines: null, whole_file: "deleted" } },
       ]);
     });
 

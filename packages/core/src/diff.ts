@@ -26,10 +26,18 @@ export interface FileDiff {
   hunks: Hunk[];
 }
 
+/**
+ * Why a report covers its whole file: it is new here, deleted here, binary, or a rename's
+ * new path. `whole` is a whole-file report that gave no reason, as older clients send.
+ */
+export const WHOLE_FILE_REASONS = ["added", "deleted", "binary", "renamed", "whole"] as const;
+export type WholeFileReason = (typeof WHOLE_FILE_REASONS)[number];
+
 /** One path's unmerged changes, in base coordinates (PRD §3.2). */
 export interface FileReport {
   path: string;
-  wholeFile: boolean;
+  /** False when the report names lines; otherwise why it covers the whole file. */
+  wholeFile: false | WholeFileReason;
   changes: Change[];
 }
 
@@ -156,16 +164,18 @@ export function reportsFromDiff(files: FileDiff[], digest: Digest): FileReport[]
   const reports: FileReport[] = [];
   for (const file of files) {
     const { basePath, newPath } = file;
-    if (basePath === null || newPath === null) {
-      reports.push({ path: (basePath ?? newPath) as string, wholeFile: true, changes: [] });
+    if (basePath === null) {
+      reports.push({ path: newPath as string, wholeFile: "added", changes: [] });
+    } else if (newPath === null) {
+      reports.push({ path: basePath, wholeFile: "deleted", changes: [] });
     } else if (file.binary) {
-      reports.push({ path: basePath, wholeFile: true, changes: [] });
+      reports.push({ path: basePath, wholeFile: "binary", changes: [] });
     } else {
       const changes = file.hunks.map((h) => ({ range: hunkToRange(h), digest: digest(h.added) }));
       reports.push({ path: basePath, wholeFile: false, changes });
     }
     if (basePath !== null && newPath !== null && basePath !== newPath) {
-      reports.push({ path: newPath, wholeFile: true, changes: [] });
+      reports.push({ path: newPath, wholeFile: "renamed", changes: [] });
     }
   }
   return reports;

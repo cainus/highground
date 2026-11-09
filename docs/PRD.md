@@ -48,17 +48,17 @@ All ranges on the wire are closed intervals `[start, end]` with `1 <= start` and
 
 From `git diff -U0 -M --histogram <base>` (histogram matches merge-ort), plus `git ls-files --others --exclude-standard` for untracked files:
 
-| Change                                      | Base-coordinate range                                       |
-| ------------------------------------------- | ----------------------------------------------------------- |
-| Modification `-a,b +c,d`                    | `[a, a+b-1]`                                                |
-| Deletion `-a,b +c,0`                        | `[a, a+b-1]`                                                |
-| Pure insertion after base line `a` (`-a,0`) | the insertion point `[a+1, a]`                              |
-| New or untracked file                       | whole file                                                  |
-| Deleted file                                | whole file                                                  |
-| Rename                                      | ranges under the base path; new path reported as whole file |
-| Binary file                                 | whole file                                                  |
+| Change                                      | Base-coordinate range                                      |
+| ------------------------------------------- | ---------------------------------------------------------- |
+| Modification `-a,b +c,d`                    | `[a, a+b-1]`                                               |
+| Deletion `-a,b +c,0`                        | `[a, a+b-1]`                                               |
+| Pure insertion after base line `a` (`-a,0`) | the insertion point `[a+1, a]`                             |
+| New or untracked file                       | whole file, `added`                                        |
+| Deleted file                                | whole file, `deleted`                                      |
+| Rename                                      | ranges under the base path; new path whole file, `renamed` |
+| Binary file                                 | whole file, `binary`                                       |
 
-A whole-file change collides as HIGH with anything in the same path.
+A whole-file change collides as HIGH with anything in the same path. `whole_file` is `false` or the reason in the table, so the dashboard and a peer's warning can say that work deletes the file rather than that it covers it. A client that sends `true` gave no reason, and is read as `whole`.
 
 Each range from a diff carries a **digest**: SHA-256 of the lines that replace it (empty for a deletion), computed on the client so no code leaves the machine. Ranges with no diff behind them, such as an agent's announced intent, carry none.
 

@@ -20,18 +20,43 @@ const TYPE_LABEL: Record<RadarCollision["type"], string> = {
 };
 
 /**
- * Who is doing the work and where: the person and the branch, which tells one person's
- * worktrees apart, then what kind of work it is when not live, or the agent doing it.
+ * The work's name: its branch, which is what tells efforts apart, then the agent doing
+ * it, if one is. Who it belongs to is shown beside it, not in it.
  */
-export function who(work: RadarWork): string {
-  if (work.kind !== "live") return `${work.author} · ${work.kind} · ${work.branch}`;
-  const where = `${work.author} · ${work.branch}`;
-  return work.actor.type === "cli" ? where : `${where} · ${work.actor.id}`;
+export function workName(work: RadarWork): string {
+  return work.actor.type === "agent" ? `${work.branch} · ${work.actor.id}` : work.branch;
 }
+
+/** A collision's two sides by name, adding each author only when the authors differ. */
+function pairName(a: RadarWork, b: RadarWork): string {
+  const side = (w: RadarWork) =>
+    a.author === b.author ? workName(w) : `${w.author} · ${workName(w)}`;
+  return `${side(a)} ↔ ${side(b)}`;
+}
+
+type WholeFile = Exclude<RadarWork["whole_file"], false>;
+
+/** What whole-file work does to the file, for a work row. */
+const WHOLE_FILE_LABEL: Record<WholeFile, string> = {
+  added: "new file",
+  deleted: "deletes the file",
+  binary: "binary file",
+  renamed: "renamed to this path",
+  whole: "whole file",
+};
+
+/** What whole-file work does to the file, for a collision. */
+const WHOLE_FILE_VERB: Record<WholeFile, string> = {
+  added: "creates this file",
+  deleted: "deletes this file",
+  binary: "changes this binary file",
+  renamed: "renames a file to this path",
+  whole: "changes the whole file",
+};
 
 const linesLabel = (work: RadarWork) =>
   work.whole_file
-    ? "whole file"
+    ? WHOLE_FILE_LABEL[work.whole_file]
     : work.lines
         .map(([start, end]) =>
           end < start
@@ -42,8 +67,18 @@ const linesLabel = (work: RadarWork) =>
         )
         .join(", ");
 
-function verdict(collision: RadarCollision): string {
-  const parts: string[] = [TYPE_LABEL[collision.type]];
+/**
+ * Why a pair collides. Whole-file work collides with everything on the file, so its
+ * verdict is what that work does to the file, by whom, not which lines meet.
+ */
+function verdict(collision: RadarCollision, a?: RadarWork, b?: RadarWork): string {
+  const whole = [a, b].filter((w): w is RadarWork & { whole_file: WholeFile } =>
+    Boolean(w?.whole_file),
+  );
+  const parts: string[] =
+    whole.length > 0
+      ? whole.map((w) => `${workName(w)} ${WHOLE_FILE_VERB[w.whole_file]}`)
+      : [TYPE_LABEL[collision.type]];
   if (collision.confirmed === true) parts.push("confirmed by merge");
   if (collision.confirmed === false) parts.push("merges cleanly");
   if (collision.approximate) parts.push("approximate");
@@ -90,16 +125,19 @@ export function FileRadar({
 
       {file.collisions.length > 0 && (
         <ul className="mt-3 grid gap-1.5" aria-label="Collisions">
-          {file.collisions.map((c) => (
-            <li key={`${c.a}|${c.b}`} className="flex flex-wrap items-center gap-2 text-sm">
-              <Severity level={c.severity} />
-              <span className="text-primary">
-                {byId.get(c.a) ? who(byId.get(c.a)!) : c.a} ↔{" "}
-                {byId.get(c.b) ? who(byId.get(c.b)!) : c.b}
-              </span>
-              <span className="text-secondary">{verdict(c)}</span>
-            </li>
-          ))}
+          {file.collisions.map((c) => {
+            const a = byId.get(c.a);
+            const b = byId.get(c.b);
+            return (
+              <li key={`${c.a}|${c.b}`} className="flex flex-wrap items-center gap-2 text-sm">
+                <Severity level={c.severity} />
+                <span className="font-medium text-primary">
+                  {a && b ? pairName(a, b) : `${c.a} ↔ ${c.b}`}
+                </span>
+                <span className="text-secondary">{verdict(c, a, b)}</span>
+              </li>
+            );
+          })}
         </ul>
       )}
 
@@ -141,9 +179,11 @@ function WorkRow({
             className="mr-1.5 inline-block size-2.5 rounded-sm align-middle"
             style={{ background: KIND_COLOR[work.kind] }}
           />
-          {who(work)}
+          {workName(work)}
         </div>
         <div className="flex flex-wrap gap-x-2 text-xs text-secondary">
+          <span className="truncate">{work.author}</span>
+          {work.kind !== "live" && <span>{work.kind}</span>}
           <span>{linesLabel(work)}</span>
           {work.approximate && <span title="Not yet translated into this file's base">≈</span>}
           <span>{ago(work.last_heartbeat_seconds_ago)}</span>
@@ -185,7 +225,7 @@ function WorkRow({
             role="tooltip"
             className="pointer-events-none absolute -top-9 left-0 z-10 rounded border border-border bg-surface-1 px-2 py-1 text-xs whitespace-nowrap shadow"
           >
-            {who(work)} — {linesLabel(work)}
+            {workName(work)} — {linesLabel(work)}
             {severity ? ` — ${severity} collision` : ""}
           </div>
         )}

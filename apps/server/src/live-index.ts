@@ -14,6 +14,7 @@ import {
   type Reporting,
   type RadarWork,
   type Warning,
+  type WholeFileReason,
 } from "@highground/core";
 
 /**
@@ -39,7 +40,7 @@ interface Side {
   headSha: string | null;
   lastCommitAt: number | null;
   merges: readonly MergeResult[];
-  wholeFile: boolean;
+  wholeFile: false | WholeFileReason;
   changes: readonly Change[];
 }
 
@@ -79,7 +80,7 @@ export interface WarningsRequest {
   workingCopyId: string;
   baseSha: string;
   changes: readonly Change[];
-  wholeFile?: boolean;
+  wholeFile?: false | WholeFileReason;
   branch?: string;
   kind?: Kind;
   headSha?: string | null;
@@ -670,6 +671,7 @@ export function warningOf(verdict: Verdict, path: string, peer: Entry, now: numb
       head_sha: peer.headSha,
       pr_url: peer.prUrl,
       lines: verdict.pair.theirs?.range ?? null,
+      whole_file: peer.wholeFile,
       intent: peer.intent,
       last_heartbeat_seconds_ago: Math.floor((now - peer.receivedAt) / 1000),
     },

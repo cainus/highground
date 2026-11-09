@@ -51,7 +51,7 @@ describe("diffRanges", () => {
     write(dir, { "new.txt": "hello\n", "ignored.txt": "secret\n" });
 
     expect(await diffRanges(dir, run(dir, "rev-parse", "HEAD"))).toEqual([
-      { path: "new.txt", wholeFile: true, changes: [] },
+      { path: "new.txt", wholeFile: "added", changes: [] },
     ]);
   });
 

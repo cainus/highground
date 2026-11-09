@@ -97,7 +97,7 @@ export async function diffRanges(dir: string, baseSha: string): Promise<FileRepo
   ]);
   const reports = reportsFromDiff(parseDiff(diff.stdout), digestLines);
   for (const path of untracked.stdout.split("\0").filter(Boolean)) {
-    reports.push({ path, wholeFile: true, changes: [] });
+    reports.push({ path, wholeFile: "added", changes: [] });
   }
   return reports;
 }
