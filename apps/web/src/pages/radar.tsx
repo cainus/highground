@@ -1,5 +1,6 @@
 import type { Me, Radar, RadarFile } from "@highground/core";
 import { useQuery } from "@tanstack/react-query";
+import { LoaderCircle } from "lucide-react";
 import { useEffect } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useApi } from "../api.tsx";
@@ -31,7 +32,11 @@ export function RadarPage({ me, mine }: { me: Me | null; mine: boolean }) {
         {mine ? "My work" : "Radar"}
         <span className="font-mono text-sm font-normal text-secondary">{repo}</span>
       </h1>
-      {radar.isPending && <p className="text-muted">Connecting…</p>}
+      {radar.isPending && (
+        <p role="status" aria-label="Loading the radar" className="flex justify-center py-12">
+          <LoaderCircle aria-hidden className="size-6 text-muted motion-safe:animate-spin" />
+        </p>
+      )}
       {radar.isError && (
         <p className="text-secondary" role="alert">
           The radar is unavailable: {radar.error.message}

@@ -109,6 +109,19 @@ describe("radar", () => {
     expect(await screen.findByRole("heading", { name: "src/auth.ts" })).toBeInTheDocument();
   });
 
+  it("shows a spinner, not an empty radar, until the first radar arrives", async () => {
+    const state = stubState();
+    const feed = new RadarFeed({ repo: REPO, files: [] }, { held: true });
+    state.feeds.set(REPO, feed);
+    renderApp(state);
+    expect(await screen.findByRole("status", { name: /loading the radar/i })).toBeInTheDocument();
+    expect(screen.queryByText(/no one is changing anything/i)).not.toBeInTheDocument();
+
+    feed.push({ repo: REPO, files: [] });
+    expect(await screen.findByText(/no one is changing anything/i)).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /loading the radar/i })).not.toBeInTheDocument();
+  });
+
   it("opens at the file a notification pointed to", async () => {
     const state = stubState();
     state.feeds.set(REPO, new RadarFeed(structuredClone(collidingRadar) as never));

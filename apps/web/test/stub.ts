@@ -14,8 +14,11 @@ export class RadarFeed {
   readonly #waiting: ((radar: Radar) => void)[] = [];
   readonly #queued: Radar[] = [];
   current: Radar;
-  constructor(current: Radar) {
+  /** Sends nothing until the first `push`, as a server still working out the first radar. */
+  readonly held: boolean;
+  constructor(current: Radar, { held = false } = {}) {
     this.current = current;
+    this.held = held;
   }
   push(radar: Radar): void {
     this.current = radar;
@@ -71,7 +74,7 @@ export function stubClient(state: StubState): ContractRouterClient<typeof contra
     radar: os.radar.handler(({ input }) => feed(input.repo).current),
     watchRadar: os.watchRadar.handler(async function* ({ input, signal }) {
       const f = feed(input.repo);
-      yield f.current;
+      if (!f.held) yield f.current;
       while (!signal?.aborted) yield await f.next();
     }),
     history: os.history.handler(() => {
