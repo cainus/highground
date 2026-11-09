@@ -112,7 +112,7 @@ describe("parked branches", () => {
     const localHead = commitAll(clone, "local");
     run(clone, "checkout", "-q", "-b", "current", "main");
 
-    const parked = await parkedBranches(clone, "origin/main", "current");
+    const parked = await parkedBranches(clone, "origin/main");
     expect(parked.map((p) => [p.name, p.head, p.base])).toEqual([
       ["local-only", localHead, run(clone, "rev-parse", "origin/main")],
     ]);
@@ -122,10 +122,33 @@ describe("parked branches", () => {
     write(clone, { "b.txt": "more\n" });
     commitAll(clone, "ahead of upstream");
     run(clone, "checkout", "-q", "current");
-    expect((await parkedBranches(clone, "origin/main", "current")).map((p) => p.name)).toEqual([
+    expect((await parkedBranches(clone, "origin/main")).map((p) => p.name)).toEqual([
       "feature",
       "local-only",
     ]);
+  });
+
+  it("leaves out every branch checked out in a worktree, which is live work there", async () => {
+    const { origin } = setup();
+    const clone = mkdtempSync(join(tmpdir(), "highground-clone-"));
+    execFileSync("git", ["clone", "-q", origin, clone]);
+    run(clone, "config", "user.email", "me@example.com");
+    run(clone, "config", "user.name", "Me");
+    for (const name of ["in-worktree", "parked"]) {
+      run(clone, "checkout", "-q", "-b", name, "main");
+      write(clone, { "a.txt": lines(20).replace("line9\n", `${name}\n`) });
+      commitAll(clone, name);
+    }
+    run(clone, "checkout", "-q", "-b", "current", "main");
+    write(clone, { "b.txt": "current\n" });
+    commitAll(clone, "current");
+    const tree = `${clone}-wt`;
+    run(clone, "worktree", "add", "-q", tree, "in-worktree");
+
+    for (const dir of [clone, tree]) {
+      expect((await parkedBranches(dir, "origin/main")).map((p) => p.name)).toEqual(["parked"]);
+    }
+    run(clone, "worktree", "remove", "--force", tree);
   });
 
   it("fetches one commit it is told about, without touching refs", async () => {

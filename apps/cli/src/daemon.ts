@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { dirname } from "node:path";
 import type { RepoState } from "@highground/git";
 import type { Log } from "@highground/log";
 import { implement, ORPCError } from "@orpc/server";
@@ -86,15 +87,27 @@ export class Daemon {
   async add(dir: string): Promise<void> {
     const key = await realpath(dir).catch(() => dir);
     if (this.#reporters.has(key) || this.#stopped) return;
-    const reporter = new Reporter({
+    const reporter: Reporter = new Reporter({
       root: key,
       server: this.#client,
       log: this.#options.log,
       ...this.#options.reporter,
       onState: (state) => void this.#announce(state.root),
+      reportsParked: (state) => this.#parkedReporter(state.commonDir) === reporter,
     });
     this.#reporters.set(key, reporter);
     await reporter.start();
+  }
+
+  /**
+   * The reporter that sends a repository's parked work: the first watched worktree of it
+   * that could be read, so a deleted worktree hands it to the next.
+   */
+  #parkedReporter(commonDir: string): Reporter | undefined {
+    for (const reporter of this.#reporters.values()) {
+      if (reporter.readable && reporter.state?.commonDir === commonDir) return reporter;
+    }
+    return undefined;
   }
 
   /** The reporters, for status and tests. */
@@ -155,7 +168,10 @@ export class Daemon {
       server: this.#options.server,
       pid: process.pid,
     };
-    await mkdir(daemonFilePath(root).replace(/daemon\.json$/, ""), { recursive: true });
+    // Not recursive: a working copy deleted meanwhile stays deleted.
+    await mkdir(dirname(daemonFilePath(root))).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
     await writeFile(daemonFilePath(root), `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
   }
 

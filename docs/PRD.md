@@ -67,7 +67,7 @@ Each range from a diff carries a **digest**: SHA-256 of the lines that replace i
 - **Working copy** — UUID in `.highground/id` (ADR 0005). The unit of "self": warnings are suppressed only between ranges from the same working copy.
 - **Actor** — `{type: "human" | "agent" | "cli", id}` acting within a working copy.
 - **Author** — the person, by git email.
-- **Parked work** reports under a working copy id derived from the working copy's id and the branch name, so it warns against its owner's own live work.
+- **Parked work** belongs to the repository, since every worktree of it shares its branches. A branch checked out in any worktree is live work there and never parked. Parked work reports under an id derived from the repository's id and the branch name, so it still warns against its owner's live work. The repository's id is a random UUID in the git directory its worktrees share (ADR 0005), and a daemon watching several of them has one send it.
 - **Pushed work** is reported by the server from its mirror; its actor is the branch, its author the head commit's author, with PR link when one exists.
 
 ## 4. Detection

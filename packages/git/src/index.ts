@@ -1,6 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -136,6 +146,7 @@ export async function mergeTree(dir: string, ours: string, theirs: string): Prom
 }
 
 export type RepoStateReason =
+  | "missing"
   | "not-a-repository"
   | "no-remote"
   | "unrecognised-remote"
@@ -154,6 +165,8 @@ export class RepoStateError extends Error {
 export interface RepoState {
   /** The working copy's top-level directory. */
   root: string;
+  /** The git directory shared by every worktree of the repository, which holds its branches. */
+  commonDir: string;
   /** `host/owner/name`, from `origin`. */
   repo: string;
   /** The remote-tracking ref of the default branch, e.g. `origin/main`. */
@@ -182,6 +195,14 @@ async function defaultRefOf(dir: string): Promise<string | null> {
 
 /** Everything a heartbeat needs to say about where a working copy stands. */
 export async function repoState(dir: string): Promise<RepoState> {
+  if (
+    !(await stat(dir).then(
+      (s) => s.isDirectory(),
+      () => false,
+    ))
+  ) {
+    throw new RepoStateError("missing", `${dir} no longer exists`);
+  }
   const root = await git(dir, ["rev-parse", "--show-toplevel"]).then(
     (r) => r.stdout.trim(),
     (error: unknown) => {
@@ -203,12 +224,21 @@ export async function repoState(dir: string): Promise<RepoState> {
       `${root} has no origin/HEAD, origin/main or origin/master`,
     );
   }
-  const [base, branch, author] = await Promise.all([
+  const [base, branch, author, commonDir] = await Promise.all([
     mergeBase(root, defaultRef),
     optional(root, ["symbolic-ref", "--short", "-q", "HEAD"]),
     optional(root, ["config", "user.email"]),
+    commonDirOf(root),
   ]);
-  return { root, repo, defaultRef, base, branch: branch || "HEAD", author: author || "unknown" };
+  return {
+    root,
+    commonDir,
+    repo,
+    defaultRef,
+    base,
+    branch: branch || "HEAD",
+    author: author || "unknown",
+  };
 }
 
 /**
@@ -243,13 +273,12 @@ const EXCLUDE_LINE = "/.highground/";
  * several processes create it at once: the first write wins and the rest read it.
  */
 export async function ensureIdentity(root: string): Promise<string> {
-  await mkdir(join(root, IDENTITY_DIR), { recursive: true });
+  // Not recursive: a working copy deleted while it was being reported stays deleted.
+  await mkdir(join(root, IDENTITY_DIR)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
   const file = join(root, IDENTITY_DIR, "id");
-  try {
-    await writeFile(file, `${randomUUID()}\n`, { flag: "wx" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-  }
+  await createId(file);
   const exclude = resolve(
     root,
     (await git(root, ["rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
@@ -260,6 +289,32 @@ export async function ensureIdentity(root: string): Promise<string> {
     await appendFile(exclude, `${current && !current.endsWith("\n") ? "\n" : ""}${EXCLUDE_LINE}\n`);
   }
   return await readId(file);
+}
+
+/**
+ * The repository's id: one random UUID for all its worktrees, kept in the git directory
+ * they share. Parked work belongs to the repository, since its branches are shared, so
+ * it reports under this id however many worktrees there are (ADR 0005).
+ */
+export async function ensureRepositoryIdentity(root: string): Promise<string> {
+  const file = join(await commonDirOf(root), "highground-id");
+  await createId(file);
+  return await readId(file);
+}
+
+/** The absolute, symlink-free git directory a repository's worktrees share. */
+async function commonDirOf(root: string): Promise<string> {
+  const dir = (await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout;
+  return await realpath(dir.trim());
+}
+
+/** Writes a new id unless the file exists; the first of concurrent creators wins. */
+async function createId(file: string): Promise<void> {
+  try {
+    await writeFile(file, `${randomUUID()}\n`, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
 }
 
 /** Reads an id file, waiting out a concurrent creator that has opened it but not yet written. */
@@ -466,30 +521,28 @@ export interface ParkedBranch extends Branch {
 }
 
 /**
- * Local branches other than `current` holding commits that are on neither the default
- * branch nor the branch's own upstream: work only this working copy has.
+ * The repository's local branches that are checked out in no worktree and hold commits
+ * on neither the default branch nor the branch's own upstream: work only this repository
+ * has. A branch checked out in a worktree is live work there, not parked.
  */
-export async function parkedBranches(
-  dir: string,
-  defaultRef: string,
-  current: string,
-): Promise<ParkedBranch[]> {
+export async function parkedBranches(dir: string, defaultRef: string): Promise<ParkedBranch[]> {
   const out = await git(dir, [
     "for-each-ref",
     "--sort=refname",
-    "--format=%(refname:short)%00%(objectname)%00%(upstream)%00%(authoremail:trim)%00%(committerdate:iso-strict)",
+    "--format=%(refname:short)%00%(objectname)%00%(upstream)%00%(authoremail:trim)%00%(committerdate:iso-strict)%00%(worktreepath)",
     "refs/heads",
   ]);
   const parked: ParkedBranch[] = [];
   for (const line of out.stdout.split("\n").filter(Boolean)) {
-    const [name, head, upstream, author, committedAt] = line.split("\0") as [
+    const [name, head, upstream, author, committedAt, worktree] = line.split("\0") as [
+      string,
       string,
       string,
       string,
       string,
       string,
     ];
-    if (name === current) continue;
+    if (worktree) continue;
     const base = await mergeBaseOf(dir, defaultRef, head).catch(() => null);
     if (base === null || base === head) continue;
     // Everything on its upstream is pushed work, which the server reports.

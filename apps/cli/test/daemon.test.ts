@@ -12,11 +12,13 @@ import { DaemonFileSchema, daemonFilePath } from "../src/discovery.ts";
 import type { daemonContract } from "../src/local-contract.ts";
 import {
   cleanupRepos,
+  commitAll,
   eventually,
   lines,
   makeWorkingCopy,
   peerHeartbeat,
   peerQuery,
+  run,
   testServer,
   write,
   type TestServer,
@@ -168,5 +170,75 @@ describe("Daemon", () => {
       expect((await peerQuery(hg.url, wc, "a.txt", 2, 2)).warnings).toHaveLength(1);
     });
     expect(d.reporters()).toHaveLength(1);
+  });
+});
+
+describe("parked work in a repository with several worktrees", () => {
+  /** A repository with a parked branch and a second worktree on a branch of its own. */
+  function worktrees() {
+    const wc = makeWorkingCopy({ "a.txt": lines(30) });
+    for (const [branch, line] of [
+      ["parked-x", 25],
+      ["feature-wt", 5],
+    ] as const) {
+      run(wc.dir, "checkout", "-q", "-b", branch, "main");
+      write(wc.dir, { "a.txt": lines(30).replace(`line${line}\n`, `${branch}\n`) });
+      commitAll(wc.dir, branch);
+    }
+    run(wc.dir, "checkout", "-q", "main");
+    const tree = `${wc.dir}-wt`;
+    run(wc.dir, "worktree", "add", "-q", tree, "feature-wt");
+    return { wc, tree };
+  }
+  const entries = (repo: string) => hg.server.hub.index.entriesAt(repo, "a.txt", Date.now());
+
+  it("reports each parked branch once, and no branch a worktree has checked out", async () => {
+    const { wc, tree } = worktrees();
+    const d = await daemon([tree, wc.dir]);
+
+    await eventually(() =>
+      expect(
+        entries(wc.repo)
+          .map((e) => [e.kind, e.branch])
+          .sort(),
+      ).toEqual([
+        ["live", "feature-wt"],
+        ["parked", "parked-x"],
+      ]),
+    );
+    // One worktree sends the parked branch; the other sends only its own live work.
+    const sent = async (i: number) => {
+      const r = d.reporters()[i]!;
+      const before = r.sent;
+      await r.refresh();
+      return r.sent - before;
+    };
+    expect([await sent(0), await sent(1)]).toEqual([2, 1]);
+  });
+
+  it("keeps reporting it from another worktree once the one reporting it is deleted", async () => {
+    const { wc, tree } = worktrees();
+    const d = await daemon([tree, wc.dir]);
+    const parked = () => entries(wc.repo).filter((e) => e.kind === "parked");
+    await eventually(() => expect(parked()).toHaveLength(1));
+    const { workingCopyId, receivedAt } = parked()[0]!;
+
+    run(wc.dir, "worktree", "remove", "--force", tree);
+    await Promise.all(d.reporters().map((r) => r.refresh()));
+    await Promise.all(d.reporters().map((r) => r.refresh()));
+
+    // Its branch is now checked out nowhere, so it is parked work too.
+    await eventually(() =>
+      expect(parked().sort((a, b) => a.branch.localeCompare(b.branch))).toMatchObject([
+        { branch: "feature-wt" },
+        {
+          workingCopyId,
+          branch: "parked-x",
+          receivedAt: expect.toSatisfy((t: number) => t > receivedAt),
+        },
+      ]),
+    );
+    // Nothing the daemon writes brings the deleted worktree back.
+    expect(existsSync(tree)).toBe(false);
   });
 });

@@ -1,10 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   derivedId,
   ensureIdentity,
+  ensureRepositoryIdentity,
   fileHunks,
   findIdentity,
   RepoStateError,
@@ -36,6 +37,7 @@ describe("repoState", () => {
 
     expect(await repoState(join(dir, "sub"))).toEqual({
       root: run(dir, "rev-parse", "--show-toplevel"),
+      commonDir: realpathSync(join(dir, ".git")),
       repo: "github.com/acme/api",
       defaultRef: "origin/main",
       base,
@@ -77,6 +79,22 @@ describe("repoState", () => {
     const error = await repoState(dir).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(RepoStateError);
     expect((error as RepoStateError).reason).toBe(reason);
+  });
+
+  it("says a working copy that was deleted no longer exists", async () => {
+    const dir = withOrigin(makeRepo({ "a.txt": "x\n" }));
+    rmSync(dir, { recursive: true, force: true });
+    const error = (await repoState(dir).catch((e: unknown) => e)) as RepoStateError;
+    expect(error.reason).toBe("missing");
+    expect(error.message).toBe(`${dir} no longer exists`);
+  });
+
+  it("names the git directory every worktree of a repository shares", async () => {
+    const dir = withOrigin(makeRepo({ "a.txt": "x\n" }));
+    const tree = `${dir}-wt`;
+    run(dir, "worktree", "add", "-q", tree);
+    expect((await repoState(tree)).commonDir).toBe((await repoState(dir)).commonDir);
+    run(dir, "worktree", "remove", "--force", tree);
   });
 });
 
@@ -135,6 +153,13 @@ describe("working-copy identity", () => {
     run(dir, "worktree", "remove", "--force", tree);
   });
 
+  it("does not bring back a working copy that was deleted", async () => {
+    const dir = makeRepo({ "a.txt": "x\n" });
+    rmSync(dir, { recursive: true, force: true });
+    await expect(ensureIdentity(dir)).rejects.toThrow();
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it("is found from anywhere inside the working copy without git", async () => {
     const dir = makeRepo({ "a.txt": "x\n" });
     const id = await ensureIdentity(dir);
@@ -143,6 +168,32 @@ describe("working-copy identity", () => {
 
     expect(await findIdentity(join(dir, "src/deep"))).toEqual({ root: dir, id });
     expect(await findIdentity("/")).toBeNull();
+  });
+});
+
+describe("repository identity", () => {
+  it("is one id for every worktree of a repository, kept in the git directory they share", async () => {
+    const dir = makeRepo({ "a.txt": "x\n" });
+    const tree = `${dir}-wt`;
+    run(dir, "worktree", "add", "-q", tree);
+    const id = await ensureRepositoryIdentity(tree);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await ensureRepositoryIdentity(dir)).toBe(id);
+    expect(id).not.toBe(await ensureIdentity(dir));
+    expect(run(dir, "status", "--porcelain")).toBe("");
+    run(dir, "worktree", "remove", "--force", tree);
+  });
+
+  it("differs between two clones", async () => {
+    const one = makeRepo({ "a.txt": "x\n" });
+    const two = makeRepo({ "a.txt": "x\n" });
+    expect(await ensureRepositoryIdentity(one)).not.toBe(await ensureRepositoryIdentity(two));
+  });
+
+  it("is shared by concurrent creators", async () => {
+    const dir = makeRepo({ "a.txt": "x\n" });
+    const ids = await Promise.all(Array.from({ length: 8 }, () => ensureRepositoryIdentity(dir)));
+    expect(new Set(ids).size).toBe(1);
   });
 });
 

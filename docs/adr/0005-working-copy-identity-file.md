@@ -10,3 +10,5 @@
 ## Consequences
 
 The daemon writes its discovery file, `.highground/daemon.json`, beside the identity, which lets an MCP server in a container find a daemon running on the host.
+
+Parked work is the exception: it belongs to the repository, not to one working copy, because every worktree of a repository shares its branches. Keyed by each worktree's id, one parked branch was reported once per worktree, and each copy warned against the others, all of them the user's own. Parked work therefore reports under the repository's id, a random UUID in `highground-id` in the git directory the worktrees share. Git ignores unknown files there, and a container mounting the same repository reads the same id. A daemon watching several worktrees of one repository has the first readable one send its parked work.

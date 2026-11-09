@@ -13,6 +13,7 @@ import {
   diffCommits,
   diffRanges,
   ensureIdentity,
+  ensureRepositoryIdentity,
   fetchCommit,
   hasCommit,
   mergeTree,
@@ -42,6 +43,12 @@ export interface ReporterOptions {
   watch?: boolean;
   /** Called whenever the working copy's state has been read. */
   onState?: (state: RepoState, id: string) => void;
+  /**
+   * Whether this reporter sends its repository's parked work. Parked branches belong to
+   * the repository, which all its worktrees share, so a daemon watching several has one
+   * of them send it. Yes by default.
+   */
+  reportsParked?: (state: RepoState) => boolean;
 }
 
 const ACTOR = { type: "cli", id: "daemon" } as const;
@@ -74,6 +81,8 @@ export class Reporter {
   sent = 0;
   /** Why the last report did not reach the server; null when it did. */
   degraded: string | null = null;
+  /** Whether the working copy could be read the last time it was tried. */
+  readable = false;
 
   readonly #options: Required<ReporterOptions>;
   readonly #watchers = new Map<string, FSWatcher>();
@@ -104,6 +113,7 @@ export class Reporter {
       ttlSeconds: 60,
       watch: true,
       onState: () => {},
+      reportsParked: () => true,
       ...options,
     };
   }
@@ -149,23 +159,32 @@ export class Reporter {
   async #report(): Promise<void> {
     if (this.#stopped) return;
     let files: FileHeartbeat[];
-    let parked: { branch: ParkedBranch; files: FileHeartbeat[] }[];
+    /** The repository's parked work, or null when another reporter sends it. */
+    let parked: {
+      repositoryId: string;
+      branches: { branch: ParkedBranch; files: FileHeartbeat[] }[];
+    } | null;
     let state: RepoState;
     try {
       state = await repoState(this.#options.root);
       this.state = state;
+      this.readable = true;
       this.id ??= await ensureIdentity(state.root);
       this.#options.onState(state, this.id);
       if (this.#options.watch) await this.#syncWatches(state.root);
       files = toFiles(await diffRanges(state.root, state.base));
-      parked = [];
-      for (const branch of await parkedBranches(state.root, state.defaultRef, state.branch)) {
-        parked.push({
-          branch,
-          files: toFiles(await diffCommits(state.root, branch.base, branch.head)),
-        });
+      parked = null;
+      if (this.#options.reportsParked(state)) {
+        parked = { repositoryId: await ensureRepositoryIdentity(state.root), branches: [] };
+        for (const branch of await parkedBranches(state.root, state.defaultRef)) {
+          parked.branches.push({
+            branch,
+            files: toFiles(await diffCommits(state.root, branch.base, branch.head)),
+          });
+        }
       }
     } catch (error) {
+      this.readable = false;
       const reason = error instanceof RepoStateError ? error.message : describeError(error);
       this.#degrade("working copy unreadable", reason);
       return;
@@ -189,10 +208,10 @@ export class Reporter {
       });
       const sentParked = new Map<string, ParkedState>();
       const parkedCollisions = new Map<string, Warning[]>();
-      for (const { branch, files: branchFiles } of parked) {
+      for (const { branch, files: branchFiles } of parked?.branches ?? []) {
         const parkedState = {
           ...common,
-          working_copy_id: derivedId("parked", this.id, branch.name),
+          working_copy_id: derivedId("parked", parked!.repositoryId, branch.name),
           author: branch.author || state.author,
           branch: branch.name,
           base_sha: branch.base,
@@ -215,9 +234,12 @@ export class Reporter {
       for (const head of this.#parkedMerges.keys()) {
         if (!parkedCollisions.has(head)) this.#parkedMerges.delete(head);
       }
-      // A branch that was parked and no longer is — pushed, merged or deleted — is cleared.
-      for (const [id, gone] of this.#parked) {
-        if (!sentParked.has(id)) await this.#send([], gone);
+      // A branch that was parked and no longer is — pushed, merged, deleted or checked
+      // out — is cleared. Work another reporter now sends is left to it: same ids.
+      if (parked) {
+        for (const [id, gone] of this.#parked) {
+          if (!sentParked.has(id)) await this.#send([], gone);
+        }
       }
       this.#parked = sentParked;
     } catch (error) {
