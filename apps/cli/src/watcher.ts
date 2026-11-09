@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from "node:fs";
-import { realpath } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import { absoluteGitDir, ignoredPaths, watchTargets } from "@highground/git";
 
 /** In a working copy's git directory, the files whose change can change its report. */
@@ -14,7 +14,7 @@ interface Watched {
 
 /**
  * Calls back when anything that could change a working copy's report changes: its files,
- * its HEAD, index or refs. Git's object store, `.highground/` and the ignored paths known
+ * its HEAD, index or refs, or its summary. Git's object store, the rest of `.highground/`, and the ignored paths known
  * at the last sync are not reported. A path ignored since then is reported until the
  * next sync, which the report it causes runs.
  *
@@ -59,6 +59,15 @@ export class WorkingCopyWatcher {
       for (const dir of await watchTargets(root)) {
         wanted.set(dir, dir === gitDir ? null : relative(root, dir));
       }
+      // Git excludes it, so no target names it, but the summary in it is reported.
+      const own = join(root, ".highground");
+      if (
+        await stat(own).then(
+          (s) => s.isDirectory(),
+          () => false,
+        )
+      )
+        wanted.set(own, ".highground");
     }
     for (const [dir, { watcher }] of this.#watched) {
       if (!wanted.has(dir)) {
@@ -94,6 +103,7 @@ export class WorkingCopyWatcher {
     const file = String(name).split(sep).join("/");
     if (rel === null) return GIT_FILES.has(file.split("/")[0]!);
     const path = rel ? `${rel.split(sep).join("/")}/${file}` : file;
+    if (path === ".highground/summary.md") return true;
     if (path === ".highground" || path.startsWith(".highground/")) return false;
     // The main working copy's git directory is inside it: only what moves HEAD or the index.
     if (path === ".git" || path.startsWith(".git/")) {

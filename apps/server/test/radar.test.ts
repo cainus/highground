@@ -38,6 +38,53 @@ describe("LiveIndex.radar", () => {
     });
   });
 
+  it("shows a working copy's latest summary on all its work, and on a peer's warnings", () => {
+    const index = new LiveIndex();
+    index.apply(
+      heartbeat(ALICE, [file("a.ts", [10, 12])], {
+        actor: { type: "agent", id: "claude-1" },
+        summary: "Moving auth to async",
+      }),
+      T0 - 2_000,
+    );
+    index.apply(
+      heartbeat(ALICE, [file("b.ts", [1, 1])], {
+        scope: "complete",
+        summary: "Moving auth to async, so login stops blocking the event loop",
+      }),
+      T0,
+    );
+    index.apply(heartbeat(BOB, [file("a.ts", [11, 11])]), T0);
+
+    const why = "Moving auth to async, so login stops blocking the event loop";
+    const work = index.radar(REPO, T0).flatMap((f) => f.work);
+    expect(work.filter((w) => w.working_copy_id === ALICE).map((w) => w.summary)).toEqual([
+      why,
+      why,
+    ]);
+    expect(work.find((w) => w.working_copy_id === BOB)!.summary).toBeNull();
+    expect(
+      index.warnings(
+        {
+          repo: REPO,
+          path: "a.ts",
+          workingCopyId: BOB,
+          baseSha: SHA,
+          changes: [{ range: [11, 11], digest: null }],
+        },
+        T0,
+      ),
+    ).toMatchObject([{ peer: { working_copy_id: ALICE, summary: why } }]);
+
+    index.apply(heartbeat(ALICE, [], { scope: "complete", summary: null }), T0 + 1_000);
+    expect(
+      index
+        .radar(REPO, T0 + 1_000)
+        .flatMap((f) => f.work)
+        .find((w) => w.working_copy_id === ALICE)?.summary,
+    ).toBeNull();
+  });
+
   it("names each colliding pair once, with the stronger of the two views", () => {
     const index = new LiveIndex();
     index.apply(heartbeat(ALICE, [file("a.ts", [10, 12])]), T0);

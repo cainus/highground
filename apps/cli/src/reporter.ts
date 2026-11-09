@@ -24,6 +24,7 @@ import {
   type RepoState,
 } from "@highground/git";
 import type { Log } from "@highground/log";
+import { readSummary } from "./discovery.ts";
 import { VERSION } from "./version.ts";
 import { describeError, type ServerClient } from "./server-client.ts";
 import { WorkingCopyWatcher } from "./watcher.ts";
@@ -208,6 +209,7 @@ export class Reporter {
         branch: state.branch,
         base_sha: state.base,
         merges: [...this.#merges.values()],
+        summary: await readSummary(state.root),
       });
       const sentParked = new Map<string, ParkedState>();
       const parkedCollisions = new Map<string, Warning[]>();

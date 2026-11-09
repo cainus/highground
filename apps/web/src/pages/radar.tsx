@@ -46,6 +46,27 @@ function forBranch(files: RadarFile[], branch: string): RadarFile[] {
   return result;
 }
 
+/** What the chosen branch is for, as its working copy described it, above its collisions. */
+function BranchSummary({ files, branch }: { files: RadarFile[]; branch: string }) {
+  const summary = files
+    .flatMap((f) => f.work)
+    .find((w) => w.branch === branch && w.summary !== null)?.summary;
+  return (
+    <section aria-label={branch} className="mb-4 rounded-lg border border-border bg-surface-1 p-4">
+      <h2 className="font-mono text-sm font-semibold break-all">{branch}</h2>
+      {summary ? (
+        <p className="mt-1 text-sm whitespace-pre-line text-primary">{summary}</p>
+      ) : (
+        <p className="mt-1 text-sm text-muted">
+          {branch} hasn&apos;t said what it&apos;s for. An agent working there can say with{" "}
+          <code className="font-mono">describe_work</code>, or write it in{" "}
+          <code className="font-mono">.highground/summary.md</code>.
+        </p>
+      )}
+    </section>
+  );
+}
+
 const collisionCount = (n: number) =>
   n === 0 ? "no collisions" : n === 1 ? "1 collision" : `${n} collisions`;
 
@@ -159,6 +180,7 @@ export function RadarPage({ me, mine }: { me: Me | null; mine: boolean }) {
       {radar.data && (scope.length > 0 || branch) && (
         <BranchPicker files={scope} branch={branch} onChange={chooseBranch} />
       )}
+      {radar.data && branch && <BranchSummary files={scope} branch={branch} />}
       {radar.data && files.length === 0 && branch && (
         <p className="text-secondary">{branch} collides with no one right now.</p>
       )}

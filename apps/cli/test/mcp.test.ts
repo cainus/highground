@@ -71,12 +71,41 @@ async function runDaemon(dir: string): Promise<Daemon> {
 }
 
 describe("highground mcp", () => {
-  it("lists its two tools", async () => {
+  it("lists its three tools", async () => {
     const wc = makeWorkingCopy({ "a.txt": "x\n" });
     const { dir } = wc;
     const { client } = await agent(dir);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["broadcast_edit_intent", "check_file_radar"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "broadcast_edit_intent",
+      "check_file_radar",
+      "describe_work",
+    ]);
+  });
+
+  it("keeps an agent's summary of its work in the working copy, where peers' warnings show it", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(20) });
+    const { dir } = wc;
+    write(dir, { "a.txt": lines(20).replace("line5\n", "five\n") });
+    await runDaemon(dir);
+    const why = "Renaming line five, so the docs match the new API.";
+    const { client } = await agent(join(dir));
+
+    const result = await client.callTool({ name: "describe_work", arguments: { summary: why } });
+    expect(result.structuredContent).toEqual({ summary: why });
+    expect(readFileSync(join(dir, ".highground", "summary.md"), "utf8")).toBe(`${why}\n`);
+    await eventually(async () => {
+      expect((await peerQuery(hg.url, wc, "a.txt", 5, 5)).warnings).toMatchObject([
+        { peer: { summary: why } },
+      ]);
+    });
+
+    await client.callTool({ name: "describe_work", arguments: { summary: "  " } });
+    await eventually(async () => {
+      expect((await peerQuery(hg.url, wc, "a.txt", 5, 5)).warnings).toMatchObject([
+        { peer: { summary: null } },
+      ]);
+    });
   });
 
   it("goes through the daemon announced in the working copy, in working-copy lines", async () => {

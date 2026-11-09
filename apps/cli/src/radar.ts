@@ -7,6 +7,7 @@ import {
   type Warning,
 } from "@highground/core";
 import { fileHunks, type RepoState } from "@highground/git";
+import { readSummary } from "./discovery.ts";
 import type { ServerClient } from "./server-client.ts";
 
 /** A working copy as the radar needs it: where it is, where it stands, and who it is. */
@@ -58,6 +59,8 @@ export async function broadcastIntent(
     working_copy_id: workingCopyId,
     actor: request.actor,
     author: state.author,
+    // The working copy's summary rides on every heartbeat from it, an agent's included.
+    summary: await readSummary(state.root),
     branch: state.branch,
     base_sha: state.base,
     scope: "partial",

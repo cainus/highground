@@ -377,6 +377,51 @@ describe("radar", () => {
     expect(await screen.findAllByRole("article")).toHaveLength(3);
   });
 
+  it("shows what each branch is for, beside its work and above its collisions", async () => {
+    const state = stubState();
+    const why = "Moving auth to async, so login stops blocking the event loop.";
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            path: "a.ts",
+            base_sha: SHA,
+            work: [
+              work("a1", "me@acme.com", [[1, 2]], { branch: "fix/one", summary: why }),
+              work("a2", "me@acme.com", [[1, 2]], { branch: "fix/two" }),
+            ],
+            collisions: [
+              {
+                a: "a1",
+                b: "a2",
+                type: "DIRECT_OVERLAP",
+                severity: "HIGH",
+                confirmed: null,
+                approximate: false,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const rows = within(await screen.findByRole("list", { name: "Work" })).getAllByRole("listitem");
+    expect(within(rows[0]!).getByText(why)).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /branch/i }), "fix/one");
+    const about = await screen.findByRole("region", { name: "fix/one" });
+    expect(within(about).getByText(why)).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /branch/i }), "fix/two");
+    expect(
+      within(await screen.findByRole("region", { name: "fix/two" })).getByText(
+        /hasn't said what it's for/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("opens with a branch chosen from the URL, and says when it collides with no one", async () => {
     const state = stubState();
     state.feeds.set(

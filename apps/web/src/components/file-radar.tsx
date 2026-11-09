@@ -181,6 +181,11 @@ function WorkRow({
           />
           {workName(work)}
         </div>
+        {work.summary && (
+          <p className="mt-0.5 line-clamp-2 text-xs text-primary" title={work.summary}>
+            {work.summary}
+          </p>
+        )}
         <div className="flex flex-wrap gap-x-2 text-xs text-secondary">
           <span className="truncate">{work.author}</span>
           {work.kind !== "live" && <span>{work.kind}</span>}

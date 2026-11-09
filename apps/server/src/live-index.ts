@@ -56,9 +56,20 @@ export interface Entry extends Side {
   changes: Change[];
   intent: string | null;
   prUrl: string | null;
+  /** The working copy's summary, shared by all its entries, so the latest one shows on each. */
+  summary: Summary;
   receivedAt: number;
   expiresAt: number;
 }
+
+/** A working copy's summary of its work, as its latest heartbeat gave it. */
+interface Summary {
+  text: string | null;
+  /** When it was last given; no entry outlives this by more than the longest TTL. */
+  at: number;
+}
+
+const MAX_TTL_MS = 300_000;
 
 /** How one side sees a collision with another. */
 export interface Verdict {
@@ -197,8 +208,13 @@ export class LiveIndex {
   >();
   /** repo → when any heartbeat for it last arrived */
   readonly #lastHeard = new Map<string, number>();
-  /** Repositories whose count of reporting working copies changed, until taken. */
+  /**
+   * Repositories whose radar changed beyond the paths a change names, until taken: the
+   * count of reporting working copies, or a summary.
+   */
   readonly #reportingChanged = new Set<string>();
+  /** `repo\0workingCopyId` → its summary */
+  readonly #summaries = new Map<string, Summary>();
 
   constructor(oracle?: Oracle) {
     this.#oracle = oracle;
@@ -218,6 +234,7 @@ export class LiveIndex {
     const touched = new Map<string, PathRef>();
     const listed = new Set(heartbeat.files.map((f) => f.path));
     this.#heard(heartbeat, aKey, at);
+    const summary = this.#summarize(heartbeat, at);
 
     if (heartbeat.scope === "complete") {
       // A copy: #remove deletes from this same set while we iterate.
@@ -251,6 +268,7 @@ export class LiveIndex {
         headSha: heartbeat.head_sha,
         lastCommitAt: heartbeat.last_commit_at ? Date.parse(heartbeat.last_commit_at) : null,
         prUrl: heartbeat.pr_url,
+        summary,
         merges: heartbeat.merges,
         receivedAt: at,
         expiresAt: at + heartbeat.ttl_seconds * 1000,
@@ -305,7 +323,20 @@ export class LiveIndex {
     };
   }
 
-  /** The repositories whose reporting count changed since the last call. */
+  /** Records the working copy's summary; a changed one changes the repository's radar. */
+  #summarize(heartbeat: Heartbeat, at: number): Summary {
+    const key = `${heartbeat.repo}\0${heartbeat.working_copy_id}`;
+    let summary = this.#summaries.get(key);
+    if (!summary) this.#summaries.set(key, (summary = { text: null, at }));
+    if (summary.text !== heartbeat.summary) {
+      summary.text = heartbeat.summary;
+      this.#reportingChanged.add(heartbeat.repo);
+    }
+    summary.at = Math.max(summary.at, at);
+    return summary;
+  }
+
+  /** The repositories whose radar changed beyond named paths since the last call. */
   takeReportingChanges(): string[] {
     const repos = [...this.#reportingChanged];
     this.#reportingChanged.clear();
@@ -319,6 +350,9 @@ export class LiveIndex {
       for (const [aKey, a] of actors) if (a.expiresAt <= now) actors.delete(aKey);
       if (actors.size === 0) this.#reporting.delete(repo);
       if (this.reporting(repo, now).working_copies !== before) this.#reportingChanged.add(repo);
+    }
+    for (const [key, summary] of this.#summaries) {
+      if (summary.at + MAX_TTL_MS < now) this.#summaries.delete(key);
     }
     const touched = new Map<string, PathRef>();
     for (const [pKey, entries] of this.#byPath) {
@@ -488,6 +522,7 @@ export class LiveIndex {
       lines,
       approximate,
       intent: entry.intent,
+      summary: entry.summary.text,
       last_heartbeat_seconds_ago: Math.max(0, Math.floor((now - entry.receivedAt) / 1000)),
     };
   }
@@ -673,6 +708,7 @@ export function warningOf(verdict: Verdict, path: string, peer: Entry, now: numb
       lines: verdict.pair.theirs?.range ?? null,
       whole_file: peer.wholeFile,
       intent: peer.intent,
+      summary: peer.summary.text,
       last_heartbeat_seconds_ago: Math.floor((now - peer.receivedAt) / 1000),
     },
     approximate: verdict.approximate,

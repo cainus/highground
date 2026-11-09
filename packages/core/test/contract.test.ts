@@ -26,6 +26,7 @@ describe("HeartbeatSchema", () => {
       last_commit_at: null,
       pr_url: null,
       merges: [],
+      summary: null,
     });
     expect(parsed.files[0]).toEqual({
       path: "src/auth/jwt.py",
@@ -33,6 +34,13 @@ describe("HeartbeatSchema", () => {
       changes: [{ range: [45, 62], digest: null }],
       intent: null,
     });
+  });
+
+  it("takes a working copy's summary of its work, up to 1,000 characters", () => {
+    expect(HeartbeatSchema.parse(heartbeat({ summary: "Why and what" })).summary).toBe(
+      "Why and what",
+    );
+    expect(HeartbeatSchema.safeParse(heartbeat({ summary: "x".repeat(1001) })).success).toBe(false);
   });
 
   it("says why a whole file is reported, and reads an older client's `true` as no reason", () => {

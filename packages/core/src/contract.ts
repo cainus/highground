@@ -87,6 +87,11 @@ export const HeartbeatSchema = z.object({
   pr_url: z.url().nullable().default(null),
   /** Speculative merges of this work with pushed branches, re-sent with each heartbeat. */
   merges: z.array(MergeResultSchema).max(100).default([]),
+  /**
+   * What the working copy's effort is and why, in plain language, as an agent or person
+   * described it. Every heartbeat from the working copy carries it; the latest one wins.
+   */
+  summary: z.string().max(1000).nullable().default(null),
 });
 
 export const WarningSchema = z.object({
@@ -108,6 +113,8 @@ export const WarningSchema = z.object({
     /** Why the peer's work covers the whole file (it deletes it, say), or false. */
     whole_file: WholeFileSchema.default(false),
     intent: z.string().nullable(),
+    /** What the peer's working copy is working on and why, if it said. */
+    summary: z.string().nullable().default(null),
     last_heartbeat_seconds_ago: z.number().int(),
   }),
   approximate: z.boolean(),
@@ -178,6 +185,8 @@ export const RadarWorkSchema = z.object({
   lines: z.array(RangeSchema),
   approximate: z.boolean(),
   intent: z.string().nullable(),
+  /** What the working copy is working on and why, if it said. */
+  summary: z.string().nullable(),
   last_heartbeat_seconds_ago: z.number().int(),
 });
 

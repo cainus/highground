@@ -33,6 +33,7 @@ describe("LiveIndex", () => {
           lines: [50, 75],
           whole_file: false,
           intent: "async verify",
+          summary: null,
           last_heartbeat_seconds_ago: 4,
         },
         approximate: false,

@@ -159,6 +159,7 @@ export function work(
     lines,
     approximate: false,
     intent: null,
+    summary: null,
     last_heartbeat_seconds_ago: 3,
     ...extra,
   };

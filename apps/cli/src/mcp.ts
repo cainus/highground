@@ -9,7 +9,13 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import { z } from "zod";
-import { daemonFilePath, DaemonFileSchema, type DaemonFile } from "./discovery.ts";
+import {
+  daemonFilePath,
+  DaemonFileSchema,
+  MAX_SUMMARY,
+  writeSummary,
+  type DaemonFile,
+} from "./discovery.ts";
 import type { daemonContract } from "./local-contract.ts";
 import { broadcastIntent, checkRadar } from "./radar.ts";
 import { configDir } from "./config.ts";
@@ -217,6 +223,35 @@ export function createMcpServer({ cwd, env, log, daemonTimeoutMs = 1_500 }: McpO
     },
     async ({ path, ranges, intent, ttl_seconds }) =>
       reply(await answer({ kind: "intent", path, ranges, intent, ttl_seconds })),
+  );
+
+  server.registerTool(
+    "describe_work",
+    {
+      description:
+        "Say in plain language what you are working on in this working copy, and why, in a few sentences. " +
+        "People and agents whose changes collide with yours see it on the radar and in their warnings, " +
+        "so they can tell what your change is for. Call it when you start a task, and again when your " +
+        "goal changes. An empty summary removes it.",
+      inputSchema: {
+        summary: z
+          .string()
+          .max(MAX_SUMMARY)
+          .describe(
+            "What you are doing and why, e.g. 'Moving auth to async, so login stops blocking.'",
+          ),
+      },
+      outputSchema: { summary: z.string().nullable() },
+    },
+    async ({ summary }) => {
+      const { root } = await locate(await realpath(cwd));
+      const kept = await writeSummary(root, summary);
+      const result = { summary: kept };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        structuredContent: result,
+      };
+    },
   );
 
   server.registerTool(

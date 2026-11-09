@@ -75,6 +75,15 @@ describe.each([
     run(dir, "worktree", "remove", "--force", tree);
   });
 
+  it("reports an edit to the working copy's summary, the one file of its own it reads", async () => {
+    const { dir } = makeWorkingCopy({ "a.txt": "a\n" });
+    write(dir, { ".highground/daemon.json": "{}\n" });
+    const { seen } = await watching(dir, recursive);
+
+    write(dir, { ".highground/summary.md": "Why this work exists\n" });
+    await eventually(() => expect(seen.changes).toBeGreaterThan(0));
+  });
+
   it("ignores ignored files, git's object store and its own directory", async () => {
     const { dir } = makeWorkingCopy({ ".gitignore": "node_modules/\n*.log\n", "a.txt": "a\n" });
     const ignored = {
