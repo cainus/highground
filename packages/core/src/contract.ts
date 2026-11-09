@@ -67,6 +67,18 @@ export const MergeResultSchema = z.object({
   conflicts: z.array(RepoPathSchema).max(200),
 });
 
+/**
+ * A daemon's merge of this working copy with another live one it also reports, both as
+ * snapshots of their working trees. It holds for both sides' current state: the daemon
+ * drops it as soon as either side changes.
+ */
+export const LocalMergeSchema = z.object({
+  working_copy_id: z.uuid(),
+  /** Paths the merge conflicts on; empty when it merges cleanly. */
+  conflicts: z.array(RepoPathSchema).max(200),
+});
+export type LocalMerge = z.infer<typeof LocalMergeSchema>;
+
 export const HeartbeatSchema = z.object({
   repo: RepoSchema,
   working_copy_id: z.uuid(),
@@ -87,6 +99,8 @@ export const HeartbeatSchema = z.object({
   pr_url: z.url().nullable().default(null),
   /** Speculative merges of this work with pushed branches, re-sent with each heartbeat. */
   merges: z.array(MergeResultSchema).max(100).default([]),
+  /** Merges with the other live working copies the same daemon reports. */
+  local_merges: z.array(LocalMergeSchema).max(200).default([]),
   /**
    * What the working copy's effort is and why, in plain language, as an agent or person
    * described it. Every heartbeat from the working copy carries it; the latest one wins.

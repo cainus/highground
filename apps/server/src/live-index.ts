@@ -7,6 +7,7 @@ import {
   type Heartbeat,
   type Hunk,
   type Kind,
+  type LocalMerge,
   type MergeResult,
   type Pair,
   type RadarCollision,
@@ -40,6 +41,10 @@ interface Side {
   headSha: string | null;
   lastCommitAt: number | null;
   merges: readonly MergeResult[];
+  /** Merges with other live working copies, from the daemon that reports both. */
+  localMerges?: readonly LocalMerge[];
+  /** Who made the changes; unknown for a query. */
+  actor?: Actor;
   wholeFile: false | WholeFileReason;
   changes: readonly Change[];
 }
@@ -270,6 +275,7 @@ export class LiveIndex {
         prUrl: heartbeat.pr_url,
         summary,
         merges: heartbeat.merges,
+        localMerges: heartbeat.local_merges,
         receivedAt: at,
         expiresAt: at + heartbeat.ttl_seconds * 1000,
       });
@@ -585,10 +591,12 @@ export class LiveIndex {
     );
     if (!pair) return null;
 
-    const confirmed =
-      pair.type === "PROXIMITY_ALERT" ? null : this.#confirmation(repo, path, viewer, peer);
+    // A merge that conflicts is a conflict whatever the lines; one that is clean leaves
+    // nearby lines a possible semantic break only, and overlapping lines a likely one.
+    const confirmed = this.#confirmation(repo, path, viewer, peer);
     let severity = SEVERITY[pair.type];
-    if (confirmed === false) severity = "MEDIUM";
+    if (confirmed === true) severity = "HIGH";
+    if (confirmed === false) severity = pair.type === "PROXIMITY_ALERT" ? "LOW" : "MEDIUM";
     if (isDormant(viewer, now) || isDormant(peer, now)) severity = LOWER[severity];
     return { pair, severity, approximate, confirmed };
   }
@@ -596,9 +604,19 @@ export class LiveIndex {
   /**
    * Whether a speculative merge found the two sides conflicting on `path`: the mirror's
    * merge for pushed against pushed, the daemon's reported merge with the pushed side's
-   * current head otherwise. Null when no merge of these exact commits is known.
+   * current head for work against pushed, and for two live working copies one daemon
+   * reports, its merge of their working trees, from either side. Null when no merge of
+   * these exact states is known. An agent's announced intent is in no working tree, so
+   * no merge speaks for it.
    */
   #confirmation(repo: string, path: string, viewer: Side, peer: Side): boolean | null {
+    if (viewer.kind === "live" && peer.kind === "live") {
+      if (viewer.actor?.type !== "cli" || peer.actor?.type !== "cli") return null;
+      const merge =
+        viewer.localMerges?.find((m) => m.working_copy_id === peer.workingCopyId) ??
+        peer.localMerges?.find((m) => m.working_copy_id === viewer.workingCopyId);
+      return merge ? merge.conflicts.includes(path) : null;
+    }
     if (viewer.kind === "pushed" && peer.kind === "pushed") {
       if (!viewer.headSha || !peer.headSha) return null;
       const conflicts = this.#oracle?.conflicts(repo, viewer.headSha, peer.headSha, path);

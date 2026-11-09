@@ -219,6 +219,37 @@ describe("following a repository's worktrees", () => {
   });
 });
 
+describe("merging two live worktrees it reports", () => {
+  it("confirms their collision with git's merge of both working trees, and redoes it as they change", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(40) });
+    const tree = `${wc.dir}-other`;
+    run(wc.dir, "worktree", "add", "-q", "-b", "other", tree);
+    write(wc.dir, { "a.txt": lines(40).replace("line10\n", "ten here\n") });
+    write(tree, { "a.txt": lines(40).replace("line20\n", "twenty there\n") });
+    await daemon([wc.dir]);
+
+    const pair = () =>
+      [...hg.server.hub.index.collisionsAt(wc.repo, "a.txt", Date.now()).values()].flatMap((m) => [
+        ...m.values(),
+      ]);
+    // Ten lines apart: nearby, and git merges them cleanly.
+    await eventually(() =>
+      expect(pair()).toMatchObject([
+        { type: "PROXIMITY_ALERT", confirmed: false, severity: "LOW" },
+        { type: "PROXIMITY_ALERT", confirmed: false, severity: "LOW" },
+      ]),
+    );
+
+    write(tree, { "a.txt": lines(40).replace("line10\n", "ten, differently\n") });
+    await eventually(() =>
+      expect(pair()).toMatchObject([
+        { type: "DIRECT_OVERLAP", confirmed: true, severity: "HIGH" },
+        { type: "DIRECT_OVERLAP", confirmed: true, severity: "HIGH" },
+      ]),
+    );
+  });
+});
+
 describe("parked work in a repository with several worktrees", () => {
   /** A repository with a parked branch and a second worktree on a branch of its own. */
   function worktrees() {

@@ -98,6 +98,69 @@ describe("LiveIndex with a mirror", () => {
     });
   });
 
+  describe("two live working copies merged by their daemon", () => {
+    const live = (wc: string, ranges: [number, number][], extra: Partial<HeartbeatInput> = {}) =>
+      heartbeat(wc, [file("a.ts", ...ranges)], { scope: "complete", ...extra });
+    const seen = (index: LiveIndex, wc: string) => [
+      ...index.collisionsAt(REPO, "a.ts", T0).get(wc)!.values(),
+    ];
+
+    it.each([
+      ["nearby lines that conflict", [[20, 21]], ["a.ts"], "PROXIMITY_ALERT", true, "HIGH"],
+      ["nearby lines that merge cleanly", [[20, 21]], [], "PROXIMITY_ALERT", false, "LOW"],
+      ["the same lines that merge cleanly", [[11, 11]], [], "DIRECT_OVERLAP", false, "MEDIUM"],
+      ["a conflict on another path only", [[11, 11]], ["b.ts"], "DIRECT_OVERLAP", false, "MEDIUM"],
+    ] as const)(
+      "confirms or clears the pair from either side's report: %s",
+      (_name, bobs, conflicts, type, confirmed, severity) => {
+        for (const reporter of [ALICE, BOB]) {
+          const index = new LiveIndex(new FakeOracle());
+          const merge = (other: string) => ({
+            local_merges:
+              reporter === other ? [] : [{ working_copy_id: other, conflicts: [...conflicts] }],
+          });
+          index.apply(live(ALICE, [[10, 12]], reporter === ALICE ? merge(BOB) : {}), T0);
+          index.apply(
+            live(
+              BOB,
+              bobs.map((r) => [r[0], r[1]] as [number, number]),
+              reporter === BOB ? merge(ALICE) : {},
+            ),
+            T0,
+          );
+          for (const wc of [ALICE, BOB]) {
+            expect(seen(index, wc)).toMatchObject([{ type, confirmed, severity }]);
+          }
+        }
+      },
+    );
+
+    it("does not confirm an agent's announced intent, which no merge has seen", () => {
+      const index = new LiveIndex(new FakeOracle());
+      index.apply(
+        live(ALICE, [[10, 12]], { local_merges: [{ working_copy_id: BOB, conflicts: [] }] }),
+        T0,
+      );
+      index.apply(
+        heartbeat(BOB, [file("a.ts", [20, 21])], { actor: { type: "agent", id: "claude-1" } }),
+        T0,
+      );
+      expect(seen(index, ALICE)).toMatchObject([{ confirmed: null, severity: "MEDIUM" }]);
+    });
+
+    it("forgets a merge once a later heartbeat leaves it out", () => {
+      const index = new LiveIndex(new FakeOracle());
+      index.apply(
+        live(ALICE, [[10, 12]], { local_merges: [{ working_copy_id: BOB, conflicts: [] }] }),
+        T0,
+      );
+      index.apply(live(BOB, [[20, 21]]), T0);
+      expect(seen(index, ALICE)).toMatchObject([{ confirmed: false }]);
+      index.apply(live(ALICE, [[10, 12]]), T0);
+      expect(seen(index, ALICE)).toMatchObject([{ confirmed: null, severity: "MEDIUM" }]);
+    });
+  });
+
   describe("pushed work and confirmation", () => {
     it("shows pushed peers with their branch, head and PR", () => {
       const index = new LiveIndex(new FakeOracle());
@@ -176,15 +239,21 @@ describe("LiveIndex with a mirror", () => {
       ]);
     });
 
-    it("never confirms a proximity alert", () => {
-      const oracle = new FakeOracle();
-      oracle.merged.set([H1, H2].sort().join(""), ["a.ts"]);
-      const index = new LiveIndex(oracle);
-      index.apply(pushed("b1", H1, [[10, 12]]), T0);
-      index.apply(pushed("b2", H2, [[20, 21]]), T0);
-      const [warning] = index.collisionsAt(REPO, "a.ts", T0).get(CAROL)!.values();
-      expect(warning).toMatchObject({ type: "PROXIMITY_ALERT", confirmed: null });
-    });
+    it.each([
+      ["conflicts on the path", ["a.ts"], true, "HIGH"],
+      ["merges cleanly", [], false, "LOW"],
+    ] as const)(
+      "confirms a proximity alert from a merge too: %s",
+      (_name, conflicts, confirmed, severity) => {
+        const oracle = new FakeOracle();
+        oracle.merged.set([H1, H2].sort().join(""), [...conflicts]);
+        const index = new LiveIndex(oracle);
+        index.apply(pushed("b1", H1, [[10, 12]]), T0);
+        index.apply(pushed("b2", H2, [[20, 21]]), T0);
+        const [warning] = index.collisionsAt(REPO, "a.ts", T0).get(CAROL)!.values();
+        expect(warning).toMatchObject({ type: "PROXIMITY_ALERT", confirmed, severity });
+      },
+    );
 
     it("never warns work about the pushed copy of its own branch", () => {
       const index = new LiveIndex(new FakeOracle());

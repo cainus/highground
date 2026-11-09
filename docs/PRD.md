@@ -90,7 +90,7 @@ Further rules:
 - **Confidence**
   - `approximate: true` when the two bases differ and either the mirror cannot yet translate between them or the range met a change between the bases.
   - `confirmed: true | false` when a speculative merge (ADR 0003) has run: true if `git merge-tree` reports a conflict, false if it merges cleanly (the warning is then downgraded to MEDIUM). Absent when no speculative merge was possible (live ↔ live).
-  - Speculative merges run pushed ↔ pushed on the server's mirror. Live/parked ↔ pushed merges run in the daemon, for each direct overlap or duplicate with a pushed peer: the working tree's snapshot (or the parked head) merged with the peer's `head_sha`. The daemon reports the result in its heartbeat's `merges`, and it counts only while that head is current. Proximity alerts are never confirmed.
+  - Speculative merges run pushed ↔ pushed on the server's mirror. Live/parked ↔ pushed merges run in the daemon, for each collision with a pushed peer: the working tree's snapshot (or the parked head) merged with the peer's `head_sha`. The daemon reports the result in its heartbeat's `merges`, and it counts only while that head is current. Live ↔ live merges run in the daemon for two worktrees it reports of one repository: both working trees' snapshots, reported as `local_merges` by either side, and counted only while neither has changed (ADR 0006). A merge that conflicts on the path makes the pair HIGH and confirmed. A clean one lowers overlapping or duplicate lines to MEDIUM and nearby lines to LOW.
 
 ## 5. API
 

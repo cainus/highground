@@ -25,6 +25,7 @@ import {
 } from "@highground/git";
 import type { Log } from "@highground/log";
 import { readSummary } from "./discovery.ts";
+import type { LocalMerges, MergeSide } from "./local-merges.ts";
 import { VERSION } from "./version.ts";
 import { describeError, type ServerClient } from "./server-client.ts";
 import { WorkingCopyWatcher } from "./watcher.ts";
@@ -49,6 +50,8 @@ export interface ReporterOptions {
    * of them send it. Yes by default.
    */
   reportsParked?: (state: RepoState) => boolean;
+  /** Merges with the other live worktrees the same daemon reports. */
+  localMerges?: Pick<LocalMerges, "for" | "schedule">;
 }
 
 const ACTOR = { type: "cli", id: "daemon" } as const;
@@ -73,7 +76,7 @@ const collisionKey = (w: Warning) =>
  * and on a keepalive, sends them as complete heartbeats, and follows the collisions the
  * server announces for it. Every failure degrades and is retried; none is thrown.
  */
-export class Reporter {
+export class Reporter implements MergeSide {
   /** The working copy's id, once its repository could be read. */
   id: string | undefined;
   state: RepoState | undefined;
@@ -84,7 +87,8 @@ export class Reporter {
   /** Whether the working copy could be read the last time it was tried. */
   readable = false;
 
-  readonly #options: Required<ReporterOptions>;
+  readonly #options: Required<Omit<ReporterOptions, "localMerges">> &
+    Pick<ReporterOptions, "localMerges">;
   readonly #watcher = new WorkingCopyWatcher(() => this.#schedule());
   readonly #abort = new AbortController();
   readonly #collisions = new Map<string, Warning>();
@@ -121,6 +125,30 @@ export class Reporter {
   /** The working copy this reports, as it was given. */
   get root(): string {
     return this.#options.root;
+  }
+
+  /** Its working tree's changes as last reported. */
+  get signature(): string {
+    return this.#signature;
+  }
+
+  /** The shared git directory of its repository, once read. */
+  get commonDir(): string | undefined {
+    return this.state?.commonDir;
+  }
+
+  #snapshot: { signature: string; commit: Promise<string> } | undefined;
+
+  /** A commit holding the working tree, made once per reported state. */
+  snapshotCommit(): Promise<string> {
+    if (this.#snapshot?.signature !== this.#signature) {
+      const commit = snapshot(this.#options.root);
+      commit.catch(() => {
+        if (this.#snapshot?.commit === commit) this.#snapshot = undefined;
+      });
+      this.#snapshot = { signature: this.#signature, commit };
+    }
+    return this.#snapshot.commit;
   }
 
   /** Reports once, then keeps reporting until stopped. */
@@ -209,6 +237,7 @@ export class Reporter {
         branch: state.branch,
         base_sha: state.base,
         merges: [...this.#merges.values()],
+        local_merges: this.#options.localMerges?.for(this) ?? [],
         summary: await readSummary(state.root),
       });
       const sentParked = new Map<string, ParkedState>();
@@ -270,6 +299,7 @@ export class Reporter {
     }
     this.#subscribe(state.repo, this.id);
     this.#scheduleMerges();
+    this.#options.localMerges?.schedule(this);
   }
 
   /**
@@ -295,7 +325,7 @@ export class Reporter {
 
   /**
    * Runs the speculative merges the current collisions call for (ADR 0003): for each
-   * direct overlap or duplicate with pushed work, the pushed head — fetched by id if
+   * collision with pushed work, nearby lines included, the pushed head — fetched by id if
    * missing — merged with a snapshot of the working tree (live work) or with the parked
    * branch's head. One batch at a time; new results go out with the next heartbeat, at once.
    */
@@ -316,7 +346,7 @@ export class Reporter {
       warnings: Iterable<Warning>,
     ) => {
       for (const w of warnings) {
-        if (w.peer.kind !== "pushed" || !w.peer.head_sha || w.type === "PROXIMITY_ALERT") continue;
+        if (w.peer.kind !== "pushed" || !w.peer.head_sha) continue;
         const key = `${w.peer.branch}\0${w.peer.head_sha}`;
         if (into.has(key)) continue;
         jobs.set(`${ours ?? ""}\0${key}`, {
@@ -408,6 +438,7 @@ export class Reporter {
               this.#collisions.set(collisionKey(warning), warning);
               log.info({ warning }, "collision started");
               if (warning.peer.kind === "pushed") this.#scheduleMerges();
+              if (warning.peer.kind === "live") this.#options.localMerges?.schedule(this);
             } else {
               this.#collisions.delete(collisionKey(warning));
               log.info({ warning }, "collision ended");

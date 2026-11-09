@@ -11,6 +11,7 @@ import { configDir, configFile, readConfig } from "./config.ts";
 import { Credentials } from "./credentials.ts";
 import { daemonFilePath, type DaemonFile } from "./discovery.ts";
 import { daemonContract } from "./local-contract.ts";
+import { LocalMerges } from "./local-merges.ts";
 import { broadcastIntent, checkRadar } from "./radar.ts";
 import { Reporter, type ReporterOptions } from "./reporter.ts";
 import { serverClient, type ServerClient } from "./server-client.ts";
@@ -54,10 +55,12 @@ export class Daemon {
   /** A followed repository's sync in flight, so two never overlap. */
   readonly #syncing = new Map<string, Promise<void>>();
   #followTimer: NodeJS.Timeout | undefined;
+  readonly #localMerges: LocalMerges;
   #stopped = false;
 
   constructor(options: DaemonOptions) {
     this.#options = options;
+    this.#localMerges = new LocalMerges(() => this.#reporters.values(), options.log);
     const env = options.env ?? process.env;
     this.#client = serverClient(
       options.server,
@@ -88,6 +91,7 @@ export class Daemon {
     clearInterval(this.#followTimer);
     if (this.#configWatched) unwatchFile(this.#configWatched);
     await Promise.allSettled(this.#syncing.values());
+    await this.#localMerges.settle();
     await Promise.all([...this.#reporters.values()].map((r) => r.stop()));
     await Promise.all([...this.#announced].map((root) => this.#withdraw(root)));
     const http = this.#http;
@@ -186,6 +190,7 @@ export class Daemon {
       ...this.#options.reporter,
       onState: (state) => void this.#announce(state.root),
       reportsParked: (state) => this.#parkedReporter(state.commonDir) === reporter,
+      localMerges: this.#localMerges,
     });
     this.#reporters.set(key, reporter);
     await reporter.start();
