@@ -48,6 +48,19 @@ describe("repoState", () => {
     });
   });
 
+  it("names the author git would commit as, when no user.email is configured", async () => {
+    const dir = withOrigin(makeRepo({ "a.txt": "x\n" }));
+    run(dir, "config", "--unset", "user.email");
+    const saved = process.env.GIT_AUTHOR_EMAIL;
+    process.env.GIT_AUTHOR_EMAIL = "from-env@example.com";
+    try {
+      expect((await repoState(dir)).author).toBe("from-env@example.com");
+    } finally {
+      if (saved === undefined) delete process.env.GIT_AUTHOR_EMAIL;
+      else process.env.GIT_AUTHOR_EMAIL = saved;
+    }
+  });
+
   it("finds the default branch without origin/HEAD", async () => {
     const dir = withOrigin(makeRepo({ "a.txt": "x\n" }), "master", false);
     expect((await repoState(dir)).defaultRef).toBe("origin/master");

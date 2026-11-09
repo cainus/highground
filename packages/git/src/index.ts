@@ -183,6 +183,16 @@ async function optional(dir: string, args: string[]): Promise<string | null> {
   return result.code === 0 ? result.stdout.trim() : null;
 }
 
+/**
+ * The email git would put on a commit made here: from the environment, the config, or,
+ * with neither, the one git makes up from the user and host names. It is what the
+ * person's parked and pushed commits carry, so their live work matches them.
+ */
+async function authorEmail(root: string): Promise<string | null> {
+  const ident = await optional(root, ["var", "GIT_AUTHOR_IDENT"]);
+  return ident?.match(/<([^>]*)>/)?.[1] || null;
+}
+
 /** The default branch's remote-tracking ref: `origin/HEAD`'s target, else `origin/main` or `origin/master`. */
 async function defaultRefOf(dir: string): Promise<string | null> {
   const head = await optional(dir, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
@@ -227,7 +237,7 @@ export async function repoState(dir: string): Promise<RepoState> {
   const [base, branch, author, commonDir] = await Promise.all([
     mergeBase(root, defaultRef),
     optional(root, ["symbolic-ref", "--short", "-q", "HEAD"]),
-    optional(root, ["config", "user.email"]),
+    authorEmail(root),
     commonDirOf(root),
   ]);
   return {

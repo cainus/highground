@@ -165,6 +165,33 @@ describe("radar", () => {
     expect(await screen.findByText(/no daemon is reporting this repository/i)).toBeInTheDocument();
   });
 
+  it("names live work by author and branch, so one person's worktrees can be told apart", async () => {
+    const state = stubState();
+    const file = { path: "a.ts", base_sha: SHA, collisions: [] };
+    state.feeds.set(
+      REPO,
+      new RadarFeed({
+        ...emptyRadar(REPO),
+        files: [
+          {
+            ...file,
+            work: [
+              work("a", "me@acme.com", [[1, 2]], { branch: "fix/one" }),
+              work("b", "me@acme.com", [[5, 6]], {
+                branch: "fix/two",
+                actor: { type: "agent", id: "claude-1" },
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    renderApp(state);
+    const rows = within(await screen.findByRole("list", { name: "Work" }));
+    expect(rows.getByText("me@acme.com · fix/one")).toBeInTheDocument();
+    expect(rows.getByText("me@acme.com · fix/two · claude-1")).toBeInTheDocument();
+  });
+
   it("opens at the file a notification pointed to", async () => {
     const state = stubState();
     state.feeds.set(REPO, new RadarFeed(structuredClone(collidingRadar) as never));

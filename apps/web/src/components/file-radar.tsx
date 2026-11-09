@@ -19,10 +19,14 @@ const TYPE_LABEL: Record<RadarCollision["type"], string> = {
   PROXIMITY_ALERT: "Nearby lines",
 };
 
-/** Who is doing the work: the person, and the agent or branch when it is not their own edits. */
+/**
+ * Who is doing the work and where: the person and the branch, which tells one person's
+ * worktrees apart, then what kind of work it is when not live, or the agent doing it.
+ */
 export function who(work: RadarWork): string {
   if (work.kind !== "live") return `${work.author} · ${work.kind} · ${work.branch}`;
-  return work.actor.type === "cli" ? work.author : `${work.author} · ${work.actor.id}`;
+  const where = `${work.author} · ${work.branch}`;
+  return work.actor.type === "cli" ? where : `${where} · ${work.actor.id}`;
 }
 
 const linesLabel = (work: RadarWork) =>
