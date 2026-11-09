@@ -7,6 +7,7 @@ import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 import { ApiContext, codeOf, useApi, type ApiClient } from "./api.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { NotifyButton } from "./components/notify-button.tsx";
+import { UpdateNotice } from "./components/update-notice.tsx";
 import { logError } from "./log.ts";
 import { cn } from "./lib/utils.ts";
 import { AdminPage } from "./pages/admin.tsx";
@@ -75,6 +76,7 @@ function Shell() {
   return (
     <div className="min-h-screen">
       <Header me={me} />
+      <UpdateNotice />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <Routes>
           <Route path="/" element={<Home />} />
