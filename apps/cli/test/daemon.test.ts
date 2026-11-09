@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLog } from "@highground/log";
@@ -6,7 +6,7 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { addWorkingCopy } from "../src/config.ts";
+import { addRepository } from "../src/config.ts";
 import { Daemon } from "../src/daemon.ts";
 import { DaemonFileSchema, daemonFilePath } from "../src/discovery.ts";
 import type { daemonContract } from "../src/local-contract.ts";
@@ -46,6 +46,7 @@ async function daemon(dirs: string[], configDir?: string): Promise<Daemon> {
     server: hg.url,
     dirs,
     log,
+    followMs: 100,
     reporter: { debounceMs: 50 },
     ...(configDir ? { configDir } : {}),
   });
@@ -158,18 +159,63 @@ describe("Daemon", () => {
     await expect(call).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("starts watching a working copy added to the config while it runs", async () => {
+  it("starts following a repository added to the config while it runs", async () => {
     const configDir = join(scratch, "config");
     const d = await daemon([], configDir);
     const wc = makeWorkingCopy({ "a.txt": lines(10) });
-    const { dir } = wc;
-    write(dir, { "a.txt": lines(10).replace("line2\n", "two\n") });
+    const tree = `${wc.dir}-linked`;
+    run(wc.dir, "worktree", "add", "-q", "-b", "linked", tree);
+    write(tree, { "a.txt": lines(10).replace("line2\n", "two\n") });
 
-    await addWorkingCopy(configDir, dir);
+    await addRepository(configDir, wc.dir);
     await eventually(async () => {
       expect((await peerQuery(hg.url, wc, "a.txt", 2, 2)).warnings).toHaveLength(1);
     });
-    expect(d.reporters()).toHaveLength(1);
+    expect(roots(d)).toEqual([wc.dir, tree].map((p) => realpathSync(p)).sort());
+  });
+});
+
+const roots = (d: Daemon) =>
+  d
+    .reporters()
+    .map((r) => r.root)
+    .sort();
+
+describe("following a repository's worktrees", () => {
+  it("reports a worktree added while it runs, and drops one that is removed", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(10) });
+    const d = await daemon([wc.dir]);
+    expect(roots(d)).toEqual([realpathSync(wc.dir)]);
+
+    const tree = `${wc.dir}-new`;
+    run(wc.dir, "worktree", "add", "-q", "-b", "new", tree);
+    write(tree, { "a.txt": lines(10).replace("line2\n", "two\n") });
+    await eventually(async () => {
+      expect((await peerQuery(hg.url, wc, "a.txt", 2, 2)).warnings).toHaveLength(1);
+    });
+    expect(roots(d)).toEqual([wc.dir, tree].map((p) => realpathSync(p)).sort());
+
+    run(wc.dir, "worktree", "remove", "--force", tree);
+    await eventually(() => expect(roots(d)).toEqual([realpathSync(wc.dir)]));
+  });
+
+  it("drops a worktree whose directory was deleted without telling git", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(10) });
+    const tree = `${wc.dir}-doomed`;
+    run(wc.dir, "worktree", "add", "-q", "-b", "doomed", tree);
+    const d = await daemon([tree]);
+    expect(roots(d)).toHaveLength(2);
+
+    rmSync(tree, { recursive: true, force: true });
+    await eventually(() => expect(roots(d)).toEqual([realpathSync(wc.dir)]));
+  });
+
+  it("follows a repository once, however many of its worktrees it is given", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(10) });
+    const tree = `${wc.dir}-twin`;
+    run(wc.dir, "worktree", "add", "-q", "-b", "twin", tree);
+    const d = await daemon([wc.dir, tree, wc.dir]);
+    expect(roots(d)).toEqual([wc.dir, tree].map((p) => realpathSync(p)).sort());
   });
 });
 

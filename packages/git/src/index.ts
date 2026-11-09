@@ -312,8 +312,27 @@ export async function ensureRepositoryIdentity(root: string): Promise<string> {
   return await readId(file);
 }
 
+/**
+ * The repository's worktrees, from any of them, as absolute symlink-free paths: the main
+ * one, unless the repository is bare, then each linked one. A worktree whose directory is
+ * gone is left out, whether or not git has pruned it yet.
+ */
+export async function worktreesOf(root: string): Promise<string[]> {
+  const { stdout } = await git(root, ["worktree", "list", "--porcelain", "-z"]);
+  const paths: string[] = [];
+  // -z ends each field with NUL and each record with one more.
+  for (const record of stdout.split("\0\0")) {
+    const fields = record.split("\0");
+    const path = fields.find((f) => f.startsWith("worktree "))?.slice("worktree ".length);
+    if (!path || fields.includes("bare")) continue;
+    const real = await realpath(path).catch(() => null);
+    if (real !== null) paths.push(real);
+  }
+  return paths;
+}
+
 /** The absolute, symlink-free git directory a repository's worktrees share. */
-async function commonDirOf(root: string): Promise<string> {
+export async function commonDirOf(root: string): Promise<string> {
   const dir = (await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout;
   return await realpath(dir.trim());
 }

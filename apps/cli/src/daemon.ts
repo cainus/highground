@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { unwatchFile, watchFile } from "node:fs";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname } from "node:path";
-import type { RepoState } from "@highground/git";
+import { commonDirOf, worktreesOf, type RepoState } from "@highground/git";
 import type { Log } from "@highground/log";
 import { implement, ORPCError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/node";
@@ -18,10 +18,12 @@ import { serverClient, type ServerClient } from "./server-client.ts";
 export interface DaemonOptions {
   /** The Highground server's URL. */
   server: string;
-  /** Working copies to watch, besides those in the config. */
+  /** Repositories to follow, each named by any of its worktrees, besides the config's. */
   dirs: string[];
-  /** Where `config.json` lives; its working copies are watched, and re-read when it changes. */
+  /** Where `config.json` lives; its repositories are followed, and it is re-read when it changes. */
   configDir?: string;
+  /** How often each followed repository's worktrees are listed again (3 s). */
+  followMs?: number;
   /** For `HIGHGROUND_TOKEN`; the process's own by default. */
   env?: NodeJS.ProcessEnv;
   log: Log;
@@ -47,6 +49,11 @@ export class Daemon {
   #http: Server | undefined;
   /** The config file being polled, if any. */
   #configWatched: string | undefined;
+  /** Followed repositories: their shared git directory → the worktrees reported for it. */
+  readonly #followed = new Map<string, Set<string>>();
+  /** A followed repository's sync in flight, so two never overlap. */
+  readonly #syncing = new Map<string, Promise<void>>();
+  #followTimer: NodeJS.Timeout | undefined;
   #stopped = false;
 
   constructor(options: DaemonOptions) {
@@ -61,14 +68,14 @@ export class Daemon {
   async start(): Promise<void> {
     await this.#listen();
     const config = this.#options.configDir ? await readConfig(this.#options.configDir) : null;
-    // Four at a time: a first report runs several git commands, and dozens of worktrees
-    // one after another keep the daemon from saying it is up for a minute or more.
-    const dirs = [...this.#options.dirs, ...(config?.workingCopies ?? [])];
-    await Promise.all(
-      Array.from({ length: Math.min(4, dirs.length) }, async () => {
-        for (let dir = dirs.shift(); dir !== undefined; dir = dirs.shift()) await this.add(dir);
-      }),
-    );
+    for (const dir of [...this.#options.dirs, ...(config?.repositories ?? [])]) {
+      await this.follow(dir);
+    }
+    // Listing a repository's worktrees is one cheap git command; a poll also notices a
+    // worktree deleted without telling git, which changes nothing git would report.
+    this.#followTimer = setInterval(() => {
+      for (const common of this.#followed.keys()) void this.#sync(common);
+    }, this.#options.followMs ?? 3000);
     if (this.#options.configDir) this.#watchConfig(this.#options.configDir);
     this.#options.log.info(
       { port: this.port, workingCopies: this.#reporters.size, server: this.#options.server },
@@ -78,7 +85,9 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.#stopped = true;
+    clearInterval(this.#followTimer);
     if (this.#configWatched) unwatchFile(this.#configWatched);
+    await Promise.allSettled(this.#syncing.values());
     await Promise.all([...this.#reporters.values()].map((r) => r.stop()));
     await Promise.all([...this.#announced].map((root) => this.#withdraw(root)));
     const http = this.#http;
@@ -86,6 +95,84 @@ export class Daemon {
       http.closeAllConnections();
       await new Promise<void>((resolve) => http.close(() => resolve()));
     }
+  }
+
+  /**
+   * Follows the repository holding `dir`: reports every worktree git lists for it, starts
+   * on one added later, and stops on one removed. A repository already followed is ignored.
+   */
+  async follow(dir: string): Promise<void> {
+    const common = await commonDirOf(dir).catch((error: unknown) => {
+      this.#options.log.warn({ dir, reason: String(error) }, "not a git repository; skipped");
+      return null;
+    });
+    if (common === null || this.#followed.has(common) || this.#stopped) return;
+    this.#followed.set(common, new Set());
+    await this.#sync(common);
+  }
+
+  #sync(common: string): Promise<void> {
+    const running = this.#syncing.get(common);
+    if (running) return running;
+    const sync = this.#syncNow(common).finally(() => this.#syncing.delete(common));
+    this.#syncing.set(common, sync);
+    return sync;
+  }
+
+  /** Brings the reported worktrees of one repository in line with git's list. */
+  async #syncNow(common: string): Promise<void> {
+    const reported = this.#followed.get(common);
+    if (!reported || this.#stopped) return;
+    let listed: string[];
+    try {
+      listed = await worktreesOf(common);
+    } catch (error) {
+      // A repository deleted outright has no worktrees left; any other failure waits.
+      if (
+        await stat(common).then(
+          () => true,
+          () => false,
+        )
+      ) {
+        this.#options.log.warn(
+          { repository: common, reason: String(error) },
+          "worktrees unreadable",
+        );
+        return;
+      }
+      listed = [];
+    }
+    const wanted = new Set(listed);
+    for (const root of reported) {
+      if (!wanted.has(root)) {
+        reported.delete(root);
+        await this.#remove(root);
+      }
+    }
+    const added = listed.filter((root) => !reported.has(root));
+    for (const root of added) reported.add(root);
+    // Four at a time: a first report runs several git commands, and dozens of worktrees
+    // one after another keep the daemon from saying it is up for a minute or more.
+    await Promise.all(
+      Array.from({ length: Math.min(4, added.length) }, async () => {
+        for (let root = added.shift(); root !== undefined; root = added.shift()) {
+          await this.add(root);
+        }
+      }),
+    );
+  }
+
+  /**
+   * Stops reporting a working copy. Its stream closes with it, so the server clears its
+   * work within the presence grace period.
+   */
+  async #remove(root: string): Promise<void> {
+    const reporter = this.#reporters.get(root);
+    if (!reporter) return;
+    this.#reporters.delete(root);
+    await reporter.stop();
+    if (this.#announced.delete(root)) await this.#withdraw(root);
+    this.#options.log.info({ root }, "worktree gone; stopped reporting it");
   }
 
   /** Starts reporting a working copy; a directory already watched is ignored. */
@@ -201,7 +288,7 @@ export class Daemon {
 
   async #reloadConfig(dir: string): Promise<void> {
     try {
-      for (const root of (await readConfig(dir)).workingCopies) await this.add(root);
+      for (const root of (await readConfig(dir)).repositories) await this.follow(root);
     } catch (error) {
       this.#options.log.warn({ file: configFile(dir), reason: String(error) }, "config unreadable");
     }

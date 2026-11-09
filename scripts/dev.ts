@@ -4,7 +4,7 @@
  *
  *   ./dev               start the server, or rebuild it if the code changed, then run the
  *                       daemon until Ctrl-C (the server keeps running)
- *   ./dev watch [dir…]  have the daemon report these working copies (default: here)
+ *   ./dev watch [dir…]  have the daemon report these repositories, with all their worktrees (default: here)
  *   ./dev mcp           give every Claude Code session Highground's MCP tools (once)
  *   ./dev stop          stop the server; its data is kept
  *

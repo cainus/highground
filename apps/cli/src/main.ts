@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { repoState } from "@highground/git";
 import { cliLogDir, createLog, prunePeriodically } from "@highground/log";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { addWorkingCopy, configDir, readConfig } from "./config.ts";
+import { addRepository, configDir, readConfig } from "./config.ts";
 import { login } from "./credentials.ts";
 import { Daemon } from "./daemon.ts";
 import { createMcpServer } from "./mcp.ts";
@@ -58,8 +58,10 @@ if (command === "daemon") {
     console.error(`highground watch: ${String(error instanceof Error ? error.message : error)}`);
     process.exit(2);
   });
-  const added = await addWorkingCopy(configDir(), state.root);
-  console.error(`${added ? "watching" : "already watching"} ${state.root}`);
+  const added = await addRepository(configDir(), state.root);
+  console.error(
+    `${added ? "following" : "already following"} the repository at ${state.root}, and all its worktrees`,
+  );
 } else if (command === "login") {
   const { values } = parseArgs({ args: rest, options: { server: { type: "string" } } });
   const dir = configDir();

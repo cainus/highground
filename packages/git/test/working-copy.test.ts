@@ -13,6 +13,7 @@ import {
   RepoStateError,
   repoState,
   watchTargets,
+  worktreesOf,
 } from "../src/index.ts";
 import { cleanupRepos, commitAll, lines, makeRepo, run, write } from "./helpers.ts";
 
@@ -209,6 +210,36 @@ describe("repository identity", () => {
     const dir = makeRepo({ "a.txt": "x\n" });
     const ids = await Promise.all(Array.from({ length: 8 }, () => ensureRepositoryIdentity(dir)));
     expect(new Set(ids).size).toBe(1);
+  });
+});
+
+describe("worktreesOf", () => {
+  it("lists every worktree of the repository from any of them, and none whose directory is gone", async () => {
+    const dir = makeRepo({ "a.txt": "a\n" });
+    const one = `${dir}-one`;
+    const two = `${dir} two`;
+    const gone = `${dir}-gone`;
+    run(dir, "worktree", "add", "-q", "-b", "one", one);
+    run(dir, "worktree", "add", "-q", "-b", "two", two);
+    run(dir, "worktree", "add", "-q", "-b", "gone", gone);
+    rmSync(gone, { recursive: true, force: true });
+
+    const expected = [dir, one, two].map((d) => realpathSync(d)).sort();
+    expect((await worktreesOf(dir)).sort()).toEqual(expected);
+    expect((await worktreesOf(two)).sort()).toEqual(expected);
+    for (const d of [one, two]) run(dir, "worktree", "remove", "--force", d);
+    run(dir, "worktree", "prune");
+  });
+
+  it("leaves out a bare repository's missing main worktree", async () => {
+    const dir = makeRepo({ "a.txt": "a\n" });
+    const bare = `${dir}.git`;
+    run(dir, "clone", "-q", "--bare", dir, bare);
+    const linked = `${dir}-linked`;
+    run(bare, "worktree", "add", "-q", linked, "HEAD");
+    expect(await worktreesOf(linked)).toEqual([realpathSync(linked)]);
+    run(bare, "worktree", "remove", "--force", linked);
+    rmSync(bare, { recursive: true, force: true });
   });
 });
 

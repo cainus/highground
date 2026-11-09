@@ -7,7 +7,7 @@ Highground tells developers and coding agents when someone else, on any branch, 
 `./dev` runs everything for one person: the server and Postgres in Docker, open but reachable only from this machine, and the daemon in your terminal.
 
 ```sh
-./dev watch ~/code/my-repo ~/code/my-repo/.worktrees/*/   # once: what the daemon reports
+./dev watch ~/code/my-repo                               # once per repository: all its worktrees, as they come and go
 ./dev mcp                                                # once: Highground's tools in every Claude Code session
 ./dev                                                    # start, or update after a pull; Ctrl-C stops the daemon
 ./dev stop                                               # stop the server; its data is kept

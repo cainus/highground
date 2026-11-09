@@ -117,6 +117,11 @@ export class Reporter {
     };
   }
 
+  /** The working copy this reports, as it was given. */
+  get root(): string {
+    return this.#options.root;
+  }
+
   /** Reports once, then keeps reporting until stopped. */
   async start(): Promise<void> {
     await this.refresh();
