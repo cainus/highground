@@ -200,6 +200,16 @@ const actorKey = (repo: string, workingCopyId: string, actor: Actor) =>
  * The in-memory projection of the heartbeat log (ADR 0002): every live entry, indexed
  * by path for warning queries. Pure — the caller supplies the time.
  */
+/** A complete report arriving in parts: the files of the parts received so far. */
+interface StagedReport {
+  report: string;
+  of: number;
+  received: number;
+  files: Heartbeat["files"];
+  /** When the latest part's ttl runs out: a report whose last part never came is dropped. */
+  expiresAt: number;
+}
+
 export class LiveIndex {
   readonly #oracle: Oracle | undefined;
   /** pathKey → actorKey → entry */
@@ -220,6 +230,8 @@ export class LiveIndex {
   readonly #reportingChanged = new Set<string>();
   /** `repo\0workingCopyId` → its summary */
   readonly #summaries = new Map<string, Summary>();
+  /** Actor → the complete report it is sending in parts, until the last part arrives. */
+  readonly #parts = new Map<string, StagedReport>();
 
   constructor(oracle?: Oracle) {
     this.#oracle = oracle;
@@ -231,14 +243,19 @@ export class LiveIndex {
     return count;
   }
 
-  /** Applies a heartbeat received at `at` (ms); returns every path whose entries changed. */
-  apply(heartbeat: Heartbeat, at: number): PathRef[] {
-    const { repo, working_copy_id: workingCopyId, actor } = heartbeat;
+  /**
+   * Applies a heartbeat received at `at` (ms); returns every path whose entries changed.
+   * A part of a complete report changes nothing until the last part, which applies them all.
+   */
+  apply(received: Heartbeat, at: number): PathRef[] {
+    const { repo, working_copy_id: workingCopyId, actor } = received;
     const aKey = actorKey(repo, workingCopyId, actor);
+    this.#heard(received, aKey, at);
+    const heartbeat = received.part ? this.#assemble(aKey, received, at) : received;
+    if (!heartbeat) return [];
     const peerId = peerKey(workingCopyId, actor);
     const touched = new Map<string, PathRef>();
     const listed = new Set(heartbeat.files.map((f) => f.path));
-    this.#heard(heartbeat, aKey, at);
     const summary = this.#summarize(heartbeat, at);
 
     if (heartbeat.scope === "complete") {
@@ -281,6 +298,36 @@ export class LiveIndex {
       });
     }
     return [...touched.values()];
+  }
+
+  /**
+   * Holds one part of a complete report; returns the whole report once its last part is
+   * in. Parts come in order: a first part starts a report over, and a part that does not
+   * follow the one held is ignored, or ends that report when it is the same report's.
+   */
+  #assemble(aKey: string, heartbeat: Heartbeat, at: number): Heartbeat | null {
+    const part = heartbeat.part!;
+    const held = this.#parts.get(aKey);
+    let staged: StagedReport;
+    if (part.index === 1) {
+      staged = { report: part.report, of: part.of, received: 0, files: [], expiresAt: 0 };
+      this.#parts.set(aKey, staged);
+    } else if (
+      held?.report === part.report &&
+      held.of === part.of &&
+      held.received + 1 === part.index
+    ) {
+      staged = held;
+    } else {
+      if (held?.report === part.report) this.#parts.delete(aKey);
+      return null;
+    }
+    staged.received = part.index;
+    staged.files.push(...heartbeat.files);
+    staged.expiresAt = at + heartbeat.ttl_seconds * 1000;
+    if (part.index < part.of) return null;
+    this.#parts.delete(aKey);
+    return { ...heartbeat, files: staged.files };
   }
 
   /** Notes who reported: every heartbeat dates the repository, a live one counts its sender. */
@@ -359,6 +406,9 @@ export class LiveIndex {
     }
     for (const [key, summary] of this.#summaries) {
       if (summary.at + MAX_TTL_MS < now) this.#summaries.delete(key);
+    }
+    for (const [aKey, staged] of this.#parts) {
+      if (staged.expiresAt <= now) this.#parts.delete(aKey);
     }
     const touched = new Map<string, PathRef>();
     for (const [pKey, entries] of this.#byPath) {

@@ -4,3 +4,4 @@ export * from "./diff.ts";
 export * from "./ranges.ts";
 export * from "./translate.ts";
 export * from "./working-copy.ts";
+export * from "./report.ts";

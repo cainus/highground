@@ -123,7 +123,8 @@ oRPC router defined with Zod in `packages/core`, served as REST at `/api/v1/*` w
 
 - A heartbeat replaces the previous changes for **(repo, working copy, actor, file)**. Empty `changes` clears a file.
 - `scope: "complete"` — the batch is the actor's entire state; files it omits are cleared. `scope: "partial"` — only listed files are replaced.
-- `ttl_seconds` 5–300, default 60. Limits: `intent` ≤ 280 chars, ≤ 50 ranges per file, ≤ 200 files per heartbeat.
+- `part: {report, index, of}` — a complete state past one heartbeat's files goes out as the numbered parts of one report: `scope: "complete"`, the same `report` UUID, `index` 1 to `of` in order, `of` 2–50. The server applies the report once its last part arrives, as one complete heartbeat, so files in later parts are never cleared and re-added in between, which would end and start their collisions on every report. A new report's first part drops an unfinished one, and an unfinished report expires with its latest part's TTL. Each part's answer still carries the collisions of the files it lists.
+- `ttl_seconds` 5–300, default 60. Limits: `intent` ≤ 280 chars, ≤ 50 ranges per file, ≤ 200 files per heartbeat, so ≤ 10,000 files per report; a client past that reports the first 10,000 and logs that it did.
 - Optional fields: `kind` (`live` by default, or `parked`; `pushed` is refused, since only the server publishes it), `head_sha` and `last_commit_at` for parked work, and `merges: [{branch, head_sha, conflicts}]`, the daemon's speculative merges with pushed heads.
 - The heartbeat is applied and acknowledged at once; the log write follows within about 5 ms, group-committed and retried until it lands (ADR 0002). The response contains the current warnings for the submitted ranges.
 

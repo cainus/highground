@@ -4,7 +4,10 @@ import {
   type FileHeartbeat,
   type FileReport,
   type HeartbeatInput,
+  MAX_FILES,
+  MAX_REPORT_PARTS,
   type MergeResult,
+  reportHeartbeats,
   type Warning,
 } from "@highground/core";
 import {
@@ -24,6 +27,7 @@ import {
   type RepoState,
 } from "@highground/git";
 import type { Log } from "@highground/log";
+import { untilAborted } from "./abortable.ts";
 import { readSummary } from "./discovery.ts";
 import type { LocalMerges, MergeSide } from "./local-merges.ts";
 import { VERSION } from "./version.ts";
@@ -55,10 +59,9 @@ export interface ReporterOptions {
 }
 
 const ACTOR = { type: "cli", id: "daemon" } as const;
-const MAX_FILES = 200;
 const MAX_CHANGES = 50;
 
-type ParkedState = Omit<HeartbeatInput, "files" | "scope">;
+type ParkedState = Omit<HeartbeatInput, "files" | "scope" | "part">;
 
 const toFiles = (reports: FileReport[]): FileHeartbeat[] =>
   reports.map((report) => ({
@@ -84,6 +87,8 @@ export class Reporter implements MergeSide {
   sent = 0;
   /** Why the last report did not reach the server; null when it did. */
   degraded: string | null = null;
+  /** Working copies whose last report had more files than one may carry: said once. */
+  readonly #tooMany = new Set<string>();
   /** Whether the working copy could be read the last time it was tried. */
   readable = false;
 
@@ -303,20 +308,25 @@ export class Reporter implements MergeSide {
   }
 
   /**
-   * Sends one actor's files: a complete heartbeat, then partials past the per-heartbeat
-   * limit. Returns the collisions the server answered with.
+   * Sends one actor's files as one complete report: in parts past one heartbeat's files,
+   * which the server applies together. Returns the collisions the server answered with.
    */
   async #send(
     files: FileHeartbeat[],
-    heartbeat: Omit<HeartbeatInput, "files" | "scope">,
+    heartbeat: Omit<HeartbeatInput, "files" | "scope" | "part">,
   ): Promise<Warning[]> {
+    const id = heartbeat.working_copy_id;
+    if (files.length <= MAX_FILES * MAX_REPORT_PARTS) this.#tooMany.delete(id);
+    else if (!this.#tooMany.has(id)) {
+      this.#tooMany.add(id);
+      this.#options.log.warn(
+        { root: this.#options.root, branch: heartbeat.branch, files: files.length },
+        `too many changed files to report; the first ${MAX_FILES * MAX_REPORT_PARTS} are`,
+      );
+    }
     const warnings: Warning[] = [];
-    for (let i = 0; i === 0 || i < files.length; i += MAX_FILES) {
-      const answer = await this.#options.server.heartbeat({
-        ...heartbeat,
-        scope: i === 0 ? "complete" : "partial",
-        files: files.slice(i, i + MAX_FILES),
-      });
+    for (const part of reportHeartbeats(files)) {
+      const answer = await this.#options.server.heartbeat({ ...heartbeat, ...part });
       warnings.push(...answer.warnings);
       this.sent++;
     }
@@ -409,14 +419,6 @@ export class Reporter implements MergeSide {
     if (this.#subscription) return;
     const { server, log } = this.#options;
     const signal = this.#abort.signal;
-    // Resolves to `done` on stop. The client's iterator does not always end when its
-    // signal aborts while it waits for an event, so each read races this, and the
-    // iterator is then returned, which closes the stream and lets presence clear us.
-    const stopped = new Promise<IteratorReturnResult<undefined>>((resolve) =>
-      signal.addEventListener("abort", () => resolve({ done: true, value: undefined }), {
-        once: true,
-      }),
-    );
     this.#subscription = (async () => {
       let delay = 100;
       while (!this.#stopped) {
@@ -428,7 +430,10 @@ export class Reporter implements MergeSide {
           this.#collisions.clear();
           delay = 100;
           for (;;) {
-            const next = await Promise.race([events.next(), stopped]);
+            // The client's iterator does not always end when its signal aborts while it
+            // waits for an event, so each read also ends on stop; the iterator is then
+            // returned, which closes the stream and lets presence clear us.
+            const next = await untilAborted(events.next(), signal);
             if (next.done) {
               if (this.#stopped) void events.return?.().catch(() => {});
               break;

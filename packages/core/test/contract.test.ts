@@ -27,6 +27,7 @@ describe("HeartbeatSchema", () => {
       pr_url: null,
       merges: [],
       summary: null,
+      part: null,
     });
     expect(parsed.files[0]).toEqual({
       path: "src/auth/jwt.py",
@@ -41,6 +42,21 @@ describe("HeartbeatSchema", () => {
       "Why and what",
     );
     expect(HeartbeatSchema.safeParse(heartbeat({ summary: "x".repeat(1001) })).success).toBe(false);
+  });
+
+  it("takes a complete report in numbered parts, up to 50", () => {
+    const report = "7d1c4f3a-2b6e-4a8d-9c0f-1e2d3c4b5a69";
+    const part = (value: unknown, scope = "complete") =>
+      HeartbeatSchema.safeParse(heartbeat({ scope, part: value }));
+    expect(HeartbeatSchema.parse(heartbeat()).part).toBeNull();
+    expect(part({ report, index: 2, of: 3 }).data?.part).toEqual({ report, index: 2, of: 3 });
+    expect(part({ report, index: 1, of: 50 }).success).toBe(true);
+    expect(part({ report, index: 1, of: 2 }, "partial").success).toBe(false);
+    expect(part({ report, index: 4, of: 3 }).success).toBe(false);
+    expect(part({ report, index: 0, of: 3 }).success).toBe(false);
+    expect(part({ report, index: 1, of: 1 }).success).toBe(false);
+    expect(part({ report, index: 1, of: 51 }).success).toBe(false);
+    expect(part({ report: "r1", index: 1, of: 2 }).success).toBe(false);
   });
 
   it("says why a whole file is reported, and reads an older client's `true` as no reason", () => {

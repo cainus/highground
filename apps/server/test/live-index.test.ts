@@ -42,6 +42,59 @@ describe("LiveIndex", () => {
     ]);
   });
 
+  describe("a complete report sent in parts", () => {
+    const R1 = "7d1c4f3a-2b6e-4a8d-9c0f-1e2d3c4b5a61";
+    const R2 = "7d1c4f3a-2b6e-4a8d-9c0f-1e2d3c4b5a62";
+    const part = (
+      report: string,
+      index: number,
+      of: number,
+      files: Parameters<typeof heartbeat>[1],
+    ) => heartbeat(BOB, files, { scope: "complete", part: { report, index, of } });
+    const has = (index: LiveIndex, path: string, now = T0) =>
+      index.warnings(ask(ALICE, path, 1, 1), now).length > 0;
+
+    it("is applied whole when its last part arrives, so no file is cleared and re-added", () => {
+      const index = new LiveIndex();
+      expect(index.apply(part(R1, 1, 2, [file("a.ts", [1, 1])]), T0)).toEqual([]);
+      expect(has(index, "a.ts")).toBe(false);
+      expect(index.apply(part(R1, 2, 2, [file("b.ts", [1, 1])]), T0)).toHaveLength(2);
+      expect([has(index, "a.ts"), has(index, "b.ts")]).toEqual([true, true]);
+
+      // The next report's first part leaves b.ts alone until the report is whole.
+      expect(index.apply(part(R2, 1, 2, [file("a.ts", [1, 1])]), T0 + 1)).toEqual([]);
+      expect(has(index, "b.ts", T0 + 1)).toBe(true);
+      const touched = index.apply(part(R2, 2, 2, [file("c.ts", [1, 1])]), T0 + 2);
+      expect(touched.map((t) => t.path).sort()).toEqual(["a.ts", "b.ts", "c.ts"]);
+      expect([has(index, "a.ts", T0 + 2), has(index, "b.ts", T0 + 2)]).toEqual([true, false]);
+      expect(has(index, "c.ts", T0 + 2)).toBe(true);
+    });
+
+    it("drops an unfinished report when another starts, and a part out of order", () => {
+      const index = new LiveIndex();
+      index.apply(part(R1, 1, 2, [file("a.ts", [1, 1])]), T0);
+      index.apply(part(R2, 1, 2, [file("x.ts", [1, 1])]), T0);
+      expect(index.apply(part(R1, 2, 2, [file("b.ts", [1, 1])]), T0)).toEqual([]);
+      index.apply(part(R2, 2, 2, [file("y.ts", [1, 1])]), T0);
+      expect(["a.ts", "b.ts", "x.ts", "y.ts"].map((p) => has(index, p))).toEqual([
+        false,
+        false,
+        true,
+        true,
+      ]);
+      expect(index.apply(part(R1, 2, 3, [file("z.ts", [1, 1])]), T0)).toEqual([]);
+      expect(has(index, "z.ts")).toBe(false);
+    });
+
+    it("forgets a report whose last part never came once its parts have expired", () => {
+      const index = new LiveIndex();
+      index.apply(part(R1, 1, 2, [file("a.ts", [1, 1])]), T0);
+      index.expire(T0 + 61_000);
+      expect(index.apply(part(R1, 2, 2, [file("b.ts", [1, 1])]), T0 + 61_000)).toEqual([]);
+      expect(has(index, "a.ts", T0 + 61_000)).toBe(false);
+    });
+  });
+
   it("grades proximity and duplicate changes as MEDIUM", () => {
     const index = new LiveIndex();
     const digest = "d".repeat(64);

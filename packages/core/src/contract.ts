@@ -79,34 +79,62 @@ export const LocalMergeSchema = z.object({
 });
 export type LocalMerge = z.infer<typeof LocalMergeSchema>;
 
-export const HeartbeatSchema = z.object({
-  repo: RepoSchema,
-  working_copy_id: z.uuid(),
-  actor: ActorSchema,
-  author: z.string().min(1).max(320),
-  branch: z.string().min(1).max(255),
-  base_sha: CommitShaSchema,
-  /** `complete`: the actor's entire state, unlisted files are cleared. `partial`: listed files only. */
-  scope: z.enum(["complete", "partial"]),
-  files: z.array(FileHeartbeatSchema).max(200),
-  ttl_seconds: z.number().int().min(5).max(300).default(60),
-  /** Clients send `live` or `parked`; only the server publishes `pushed`. */
-  kind: KindSchema.default("live"),
-  /** The branch's head commit, for parked and pushed work. */
-  head_sha: CommitShaSchema.nullable().default(null),
-  /** When the head was committed; dormancy is measured from it. */
-  last_commit_at: z.iso.datetime({ offset: true }).nullable().default(null),
-  pr_url: z.url().nullable().default(null),
-  /** Speculative merges of this work with pushed branches, re-sent with each heartbeat. */
-  merges: z.array(MergeResultSchema).max(100).default([]),
-  /** Merges with the other live working copies the same daemon reports. */
-  local_merges: z.array(LocalMergeSchema).max(200).default([]),
-  /**
-   * What the working copy's effort is and why, in plain language, as an agent or person
-   * described it. Every heartbeat from the working copy carries it; the latest one wins.
-   */
-  summary: z.string().max(1000).nullable().default(null),
-});
+/** Most files one heartbeat may carry. */
+export const MAX_FILES = 200;
+
+/** Most parts one complete report may be sent in: 10,000 files at 200 a heartbeat. */
+export const MAX_REPORT_PARTS = 50;
+
+/**
+ * One heartbeat's place in a complete report too large for one heartbeat. The server
+ * holds the parts and applies the report once, whole, when its last part arrives, so a
+ * file in a later part is never cleared and re-added in between.
+ */
+export const ReportPartSchema = z
+  .object({
+    /** The same for every part of one report, and new for each report. */
+    report: z.uuid(),
+    index: z.number().int().min(1),
+    of: z.number().int().min(2).max(MAX_REPORT_PARTS),
+  })
+  .refine((part) => part.index <= part.of, { message: "index is past the last part" });
+export type ReportPart = z.infer<typeof ReportPartSchema>;
+
+export const HeartbeatSchema = z
+  .object({
+    repo: RepoSchema,
+    working_copy_id: z.uuid(),
+    actor: ActorSchema,
+    author: z.string().min(1).max(320),
+    branch: z.string().min(1).max(255),
+    base_sha: CommitShaSchema,
+    /** `complete`: the actor's entire state, unlisted files are cleared. `partial`: listed files only. */
+    scope: z.enum(["complete", "partial"]),
+    files: z.array(FileHeartbeatSchema).max(MAX_FILES),
+    ttl_seconds: z.number().int().min(5).max(300).default(60),
+    /** Clients send `live` or `parked`; only the server publishes `pushed`. */
+    kind: KindSchema.default("live"),
+    /** The branch's head commit, for parked and pushed work. */
+    head_sha: CommitShaSchema.nullable().default(null),
+    /** When the head was committed; dormancy is measured from it. */
+    last_commit_at: z.iso.datetime({ offset: true }).nullable().default(null),
+    pr_url: z.url().nullable().default(null),
+    /** Speculative merges of this work with pushed branches, re-sent with each heartbeat. */
+    merges: z.array(MergeResultSchema).max(100).default([]),
+    /** Merges with the other live working copies the same daemon reports. */
+    local_merges: z.array(LocalMergeSchema).max(200).default([]),
+    /**
+     * What the working copy's effort is and why, in plain language, as an agent or person
+     * described it. Every heartbeat from the working copy carries it; the latest one wins.
+     */
+    summary: z.string().max(1000).nullable().default(null),
+    /** Set when this heartbeat is one part of a complete report sent in several. */
+    part: ReportPartSchema.nullable().default(null),
+  })
+  .refine((heartbeat) => heartbeat.part === null || heartbeat.scope === "complete", {
+    message: "only a complete report is sent in parts",
+    path: ["part"],
+  });
 
 export const WarningSchema = z.object({
   severity: SeveritySchema,

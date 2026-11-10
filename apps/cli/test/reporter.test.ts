@@ -1,4 +1,4 @@
-import type { Admin } from "@highground/core";
+import type { Admin, HeartbeatInput } from "@highground/core";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createLog } from "@highground/log";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Reporter, type ReporterOptions } from "../src/reporter.ts";
-import { serverClient } from "../src/server-client.ts";
+import { type ServerClient, serverClient } from "../src/server-client.ts";
 import {
   cleanupRepos,
   eventually,
@@ -135,6 +135,30 @@ describe("Reporter", () => {
         expect((await peerQuery(hg.url, wc, path, 1, 0)).warnings).toHaveLength(1);
       });
     }
+  });
+
+  it("sends a report past one heartbeat's files as parts of one complete report", async () => {
+    const wc = makeWorkingCopy({ "a.txt": lines(3) });
+    const { dir } = wc;
+    write(dir, Object.fromEntries(Array.from({ length: 450 }, (_, i) => [`f${i}.txt`, `${i}\n`])));
+    const client = serverClient(hg.url);
+    const sent: HeartbeatInput[] = [];
+    const server = {
+      ...client,
+      heartbeat: (input: HeartbeatInput) => {
+        sent.push(input);
+        return client.heartbeat(input);
+      },
+    } as ServerClient;
+    await reporter(dir, { server });
+    await eventually(() => expect(sent.some((h) => h.files.length > 0)).toBe(true));
+    const report = sent.filter((h) => h.files.length > 0).slice(0, 3);
+    expect(report.map((h) => [h.scope, h.part?.index, h.part?.of, h.files.length])).toEqual([
+      ["complete", 1, 3, 200],
+      ["complete", 2, 3, 200],
+      ["complete", 3, 3, 50],
+    ]);
+    expect(new Set(report.map((h) => h.part?.report)).size).toBe(1);
   });
 
   it("caps a file's changes at 50 and still covers every changed line", async () => {

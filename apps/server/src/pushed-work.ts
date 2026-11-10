@@ -1,10 +1,15 @@
-import { capChanges, HeartbeatSchema, type FileHeartbeat, type FileReport } from "@highground/core";
+import {
+  capChanges,
+  HeartbeatSchema,
+  reportHeartbeats,
+  type FileHeartbeat,
+  type FileReport,
+} from "@highground/core";
 import type { PullRequest } from "./github.ts";
 import { branches, defaultBranch, derivedId, diffCommits, mergeBaseOf } from "@highground/git";
 import type { Hub } from "./hub.ts";
 import type { Mirror } from "./mirror.ts";
 
-const MAX_FILES = 200;
 const MAX_CHANGES = 50;
 /** Longer than a fetch round, so pushed work never lapses between rounds. */
 const TTL_SECONDS = 300;
@@ -64,7 +69,7 @@ export class PushedWork {
         changes: capChanges(r.changes, MAX_CHANGES),
         intent: null,
       }));
-      for (let i = 0; i === 0 || i < files.length; i += MAX_FILES) {
+      for (const part of reportHeartbeats(files)) {
         hub.heartbeat(
           HeartbeatSchema.parse({
             repo,
@@ -73,8 +78,7 @@ export class PushedWork {
             author: branch.author || "unknown",
             branch: branch.name,
             base_sha: base,
-            scope: i === 0 ? "complete" : "partial",
-            files: files.slice(i, i + MAX_FILES),
+            ...part,
             ttl_seconds: TTL_SECONDS,
             kind: "pushed",
             head_sha: branch.head,
